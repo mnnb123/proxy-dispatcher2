@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proxy Dispatcher — Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Proxy Dispatcher</h1>
+    <div>
+      <span id="statusBadge" class="badge">—</span>
+      <button id="logoutBtn" class="btn btn-danger">Logout</button>
+    </div>
+  </header>
+
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="tab-groups">Proxy Groups</button>
+    <button class="tab-btn" data-tab="tab-portmap">Port Mapping</button>
+    <button class="tab-btn" data-tab="tab-input">Input Proxy</button>
+    <button class="tab-btn" data-tab="tab-output">Output Proxy</button>
+    <button class="tab-btn" data-tab="tab-bypass">Bypass Rules</button>
+    <button class="tab-btn" data-tab="tab-block">Block List</button>
+    <button class="tab-btn" data-tab="tab-whitelist">Whitelist</button>
+    <button class="tab-btn" data-tab="tab-autobypass">Auto Bypass</button>
+    <button class="tab-btn" data-tab="tab-bandwidth">Bandwidth</button>
+    <button class="tab-btn" data-tab="tab-report">Report</button>
+    <button class="tab-btn" data-tab="tab-account">My Account</button>
+    <button class="tab-btn admin-only" data-tab="tab-users">Users</button>
+    <button class="tab-btn admin-only" data-tab="tab-settings">Settings</button>
+  </nav>
+
+  <!-- TAB: Dashboard -->
+  <main id="tab-dashboard" class="tab-content">
+    <div class="grid">
+      <section class="card" style="grid-column:1/3">
+        <h2>Health Status
+          <button class="btn btn-sm" id="checkNowBtn" style="margin-left:10px">Check Now</button>
+        </h2>
+        <div class="stat-cards">
+          <div class="stat-card"><div class="stat-val" id="dbTotal">—</div><div class="stat-lbl">Total</div></div>
+          <div class="stat-card"><div class="stat-val" id="dbAlive" style="color:#4ade80">—</div><div class="stat-lbl">Alive</div></div>
+          <div class="stat-card"><div class="stat-val" id="dbSlow" style="color:#fbbf24">—</div><div class="stat-lbl">Slow</div></div>
+          <div class="stat-card"><div class="stat-val" id="dbDead" style="color:#f87171">—</div><div class="stat-lbl">Dead</div></div>
+          <div class="stat-card"><div class="stat-val" id="dbAvgLat">—</div><div class="stat-lbl">Avg Latency</div></div>
+          <div class="stat-card"><div class="stat-val" id="dbNext">—</div><div class="stat-lbl">Next Check</div></div>
+        </div>
+      </section>
+      <section class="card" style="grid-column:1/3">
+        <h2>Proxies by Group</h2>
+        <div id="healthGroupsContainer"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Proxy Groups -->
+  <main id="tab-groups" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card" style="grid-column:1/3">
+        <h2>Proxy Groups
+          <button class="btn btn-sm btn-primary" id="newGroupBtn" style="margin-left:10px">+ Tạo Group</button>
+        </h2>
+        <div id="groupsList"></div>
+      </section>
+      <section class="card" style="grid-column:1/3">
+        <h2>Import Sources
+          <button class="btn btn-sm btn-primary" id="newImportBtn" style="margin-left:10px">+ Thêm Source</button>
+        </h2>
+        <div id="importSourcesList"></div>
+      </section>
+      <section class="card">
+        <h2>Health Check Config</h2>
+        <div class="toggle-row">
+          <label class="toggle-label">Enable Health Check</label>
+          <input type="checkbox" id="hcEnabled">
+        </div>
+        <div class="row">
+          <div class="col"><label>Interval (sec)</label><input type="number" id="hcInterval" value="30"></div>
+          <div class="col"><label>Timeout (sec)</label><input type="number" id="hcTimeout" value="5"></div>
+        </div>
+        <div class="row">
+          <div class="col"><label>Slow Threshold (ms)</label><input type="number" id="hcSlow" value="3000"></div>
+          <div class="col"><label>Max Concurrent</label><input type="number" id="hcConcurrent" value="20"></div>
+        </div>
+        <label>Test URL</label>
+        <input type="text" id="hcTestURL" value="http://httpbin.org/ip">
+        <button class="btn btn-primary" id="saveHCBtn" style="margin-top:10px">Save Health Config</button>
+        <div id="hcMsg" class="msg"></div>
+      </section>
+      <section class="card">
+        <h2>Retry Config</h2>
+        <div class="toggle-row">
+          <label class="toggle-label">Enable Retry</label>
+          <input type="checkbox" id="retryEnabled">
+        </div>
+        <div class="row">
+          <div class="col"><label>Max Attempts</label><input type="number" id="retryMax" value="3"></div>
+          <div class="col"><label>Backoff (ms)</label><input type="number" id="retryBackoff" value="100"></div>
+        </div>
+        <button class="btn btn-primary" id="saveRetryBtn" style="margin-top:10px">Save Retry</button>
+        <div id="retryMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Port Mapping -->
+  <main id="tab-portmap" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card" style="grid-column:1/3">
+        <h2>Port → Group Mappings</h2>
+        <div id="portMapTable"></div>
+        <h3 style="margin-top:14px;font-size:14px;color:#a78bfa">Add Mapping</h3>
+        <div class="row">
+          <div class="col"><label>Port Start</label><input type="number" id="pmStart"></div>
+          <div class="col"><label>Port End</label><input type="number" id="pmEnd"></div>
+          <div class="col"><label>Group</label><select id="pmGroup"></select></div>
+        </div>
+        <button class="btn btn-primary" id="addPMBtn">+ Thêm</button>
+        <button class="btn btn-success" id="savePMBtn" style="margin-left:10px">Save All (Restart Required)</button>
+        <div id="pmMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Input Proxy -->
+  <main id="tab-input" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Input Proxy</h2>
+        <label>Connection Type</label>
+        <select id="inputType">
+          <option value="http">HTTP</option>
+          <option value="socks5">SOCKS5</option>
+        </select>
+        <label>Proxy List (host:port hoặc host:port:user:pass)</label>
+        <textarea id="inputList" rows="14" spellcheck="false"></textarea>
+        <button id="saveInputBtn" class="btn btn-primary">Save Input</button>
+        <div id="inputMsg" class="msg"></div>
+      </section>
+
+      <section class="card">
+        <h2>Change Password</h2>
+        <label>Old Password</label>
+        <input type="password" id="oldPass">
+        <label>New Password</label>
+        <input type="password" id="newPass">
+        <button id="changePassBtn" class="btn btn-primary">Change Password</button>
+        <div id="passMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Output Proxy -->
+  <main id="tab-output" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Output Proxy</h2>
+        <label>VPS IP</label>
+        <input type="text" id="vpsIp">
+        <div class="row">
+          <div class="col"><label>Start Port</label><input type="number" id="startPort"></div>
+          <div class="col"><label>Count</label><input type="number" id="count"></div>
+        </div>
+        <button id="saveOutputBtn" class="btn btn-primary">Save Output</button>
+        <label>Output List</label>
+        <textarea id="outputList" rows="10" readonly></textarea>
+        <button id="copyBtn" class="btn btn-success">Copy All</button>
+        <div id="outputMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Bypass Rules -->
+  <main id="tab-bypass" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Domain Bypass</h2>
+        <label>Default Bypass Action</label>
+        <select id="bypassAction">
+          <option value="direct">Direct</option>
+          <option value="resource">Resource Proxy</option>
+        </select>
+        <label>Domain List (1 domain/dòng)</label>
+        <textarea id="bypassDomainList" rows="12" spellcheck="false" placeholder="*.google.com&#10;*.gstatic.com&#10;microsoft.com"></textarea>
+        <div class="preset-bar">
+          <button class="btn btn-sm" onclick="appendPreset('google')">+Google</button>
+          <button class="btn btn-sm" onclick="appendPreset('microsoft')">+Microsoft</button>
+          <button class="btn btn-sm" onclick="appendPreset('apple')">+Apple</button>
+          <button class="btn btn-sm" onclick="appendPreset('cdn')">+CDN</button>
+          <button class="btn btn-sm" onclick="appendPreset('social')">+Social</button>
+        </div>
+        <button id="saveBypassDomainsBtn" class="btn btn-primary">Save Domains</button>
+        <div id="bypassDomainMsg" class="msg"></div>
+      </section>
+
+      <section class="card">
+        <h2>Extension Bypass</h2>
+        <label>Default Extension Action</label>
+        <select id="extAction">
+          <option value="direct">Direct</option>
+          <option value="resource">Resource Proxy</option>
+        </select>
+        <div id="extGroups"></div>
+        <div class="row" style="margin-top:10px">
+          <div class="col"><input type="text" id="customExt" placeholder="custom ext (no dot)"></div>
+          <div class="col"><button class="btn btn-sm" onclick="addCustomExt()">Thêm</button></div>
+        </div>
+        <button id="saveExtBtn" class="btn btn-primary" style="margin-top:12px">Save Extensions</button>
+        <div id="extMsg" class="msg"></div>
+      </section>
+
+      <section class="card">
+        <h2>Resource Proxy</h2>
+        <label>Host</label>
+        <input type="text" id="resHost" placeholder="proxy host">
+        <div class="row">
+          <div class="col"><label>Port</label><input type="number" id="resPort"></div>
+          <div class="col"><label>Type</label>
+            <select id="resType"><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select>
+          </div>
+        </div>
+        <label>User (optional)</label>
+        <input type="text" id="resUser">
+        <label>Pass (optional)</label>
+        <input type="password" id="resPass">
+        <button id="saveResBtn" class="btn btn-primary">Save Resource Proxy</button>
+        <div id="resMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Block List -->
+  <main id="tab-block" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Block List</h2>
+        <label>Default Block Action</label>
+        <select id="blockAction">
+          <option value="403">403 Forbidden</option>
+          <option value="reset">TCP Reset</option>
+          <option value="drop">Silent Drop</option>
+        </select>
+        <label>Domain List (1 domain/dòng)</label>
+        <textarea id="blockDomainList" rows="14" spellcheck="false" placeholder="ads.example.com&#10;*.tracking.net"></textarea>
+        <button id="saveBlockBtn" class="btn btn-primary">Save Block List</button>
+        <div id="blockMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Whitelist -->
+  <main id="tab-whitelist" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>IP Whitelist</h2>
+        <div class="toggle-row">
+          <label class="toggle-label">Enable Whitelist</label>
+          <input type="checkbox" id="wlEnabled">
+        </div>
+        <div style="margin:10px 0">
+          <button class="btn btn-success" id="addMyIpBtn">Thêm IP hiện tại</button>
+          <span id="myIpDisplay" style="margin-left:10px;font-size:13px;color:#8a8ab0"></span>
+        </div>
+        <div id="wlTable"></div>
+        <h3 style="margin-top:16px;font-size:14px;color:#a78bfa">Thêm IP mới</h3>
+        <div class="row">
+          <div class="col"><label>IP / CIDR</label><input type="text" id="wlNewIp" placeholder="1.2.3.4 hoặc 10.0.0.0/24"></div>
+          <div class="col"><label>Ghi chú</label><input type="text" id="wlNewNote"></div>
+          <div class="col"><label>Thời hạn</label>
+            <select id="wlNewExpiry">
+              <option value="0">Vĩnh viễn</option>
+              <option value="3600">1 giờ</option>
+              <option value="86400">24 giờ</option>
+              <option value="604800">7 ngày</option>
+              <option value="2592000">30 ngày</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="addWlBtn">Thêm</button>
+        <div id="wlMsg" class="msg"></div>
+      </section>
+
+      <section class="card">
+        <h2>Auto Ban</h2>
+        <div class="toggle-row">
+          <label class="toggle-label">Enable Auto Ban</label>
+          <input type="checkbox" id="abEnabled" checked>
+        </div>
+        <div class="row">
+          <div class="col"><label>Max Attempts</label><input type="number" id="abMaxAttempts" value="10"></div>
+          <div class="col"><label>Ban Duration (sec)</label><input type="number" id="abBanDuration" value="3600"></div>
+        </div>
+        <button class="btn btn-primary" id="saveWlConfigBtn">Save Whitelist Config</button>
+        <div id="wlConfigMsg" class="msg"></div>
+        <h3 style="margin-top:14px;font-size:14px;color:#a78bfa">Banned IPs</h3>
+        <div id="bannedList" style="font-size:13px;color:#f87171"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Auto Bypass -->
+  <main id="tab-autobypass" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Auto Bypass (Size-based)</h2>
+        <div class="toggle-row">
+          <label class="toggle-label">Enable Auto Bypass</label>
+          <input type="checkbox" id="abpEnabled">
+        </div>
+        <label>Size Threshold</label>
+        <div class="row">
+          <div class="col"><input type="number" id="abpThresholdVal" value="1"></div>
+          <div class="col"><select id="abpThresholdUnit">
+            <option value="1024">KB</option>
+            <option value="1048576" selected>MB</option>
+          </select></div>
+        </div>
+        <label>Action when threshold exceeded</label>
+        <div class="radio-group">
+          <label><input type="radio" name="abpAction" value="direct" checked> Direct</label>
+          <label><input type="radio" name="abpAction" value="resource"> Resource Proxy</label>
+          <label><input type="radio" name="abpAction" value="throttle"> Throttle</label>
+          <label><input type="radio" name="abpAction" value="drop"> Drop</label>
+        </div>
+        <label>Strategy</label>
+        <div class="radio-group">
+          <label><input type="radio" name="abpStrategy" value="header" checked> Header</label>
+          <label><input type="radio" name="abpStrategy" value="stream"> Stream</label>
+          <label><input type="radio" name="abpStrategy" value="predict"> Predict</label>
+        </div>
+        <button class="btn btn-primary" id="saveAbpBtn">Save Auto Bypass</button>
+        <div id="abpMsg" class="msg"></div>
+      </section>
+
+      <section class="card">
+        <h2>Force Proxy Domains</h2>
+        <label>Domain List (1 domain/dòng)</label>
+        <textarea id="forceProxyList" rows="14" spellcheck="false" placeholder="*.netflix.com&#10;*.spotify.com"></textarea>
+        <button class="btn btn-primary" id="saveForceProxyBtn">Save Force Proxy</button>
+        <div id="forceProxyMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Bandwidth -->
+  <main id="tab-bandwidth" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Budget Config</h2>
+        <div class="toggle-row">
+          <label class="toggle-label">Enable Budget</label>
+          <input type="checkbox" id="budgetEnabled">
+        </div>
+        <div class="row">
+          <div class="col"><label>Daily Limit (GB)</label><input type="number" id="budgetDailyGB" step="0.1" value="5"></div>
+          <div class="col"><label>Domain Hourly (MB)</label><input type="number" id="budgetDomainMB" value="100"></div>
+        </div>
+        <div class="row">
+          <div class="col"><label>Warning %</label><input type="number" id="budgetWarnPct" value="80"></div>
+          <div class="col"><label>Over-limit Action</label>
+            <select id="budgetOverAction">
+              <option value="direct">Direct</option>
+              <option value="drop">Drop</option>
+              <option value="throttle">Throttle</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="saveBudgetBtn">Save Budget</button>
+        <div id="budgetMsg" class="msg"></div>
+      </section>
+
+      <section class="card">
+        <h2>Bandwidth Stats</h2>
+        <div class="stat-cards">
+          <div class="stat-card"><div class="stat-val" id="bwProxy">—</div><div class="stat-lbl">Proxy</div></div>
+          <div class="stat-card"><div class="stat-val" id="bwDirect">—</div><div class="stat-lbl">Direct/Bypass</div></div>
+          <div class="stat-card"><div class="stat-val" id="bwSaving">—</div><div class="stat-lbl">Saving Today</div></div>
+          <div class="stat-card"><div class="stat-val" id="bwBudget">—</div><div class="stat-lbl">Budget %</div></div>
+        </div>
+        <label>Budget Usage</label>
+        <div class="progress-bar"><div class="progress-fill" id="budgetBar"></div></div>
+        <div style="margin-top:16px">
+          <svg id="pieChart" width="160" height="160" viewBox="0 0 36 36"></svg>
+          <div id="pieLegend" style="font-size:12px;margin-top:8px"></div>
+        </div>
+      </section>
+
+      <section class="card" style="grid-column:1/3">
+        <h2>Top Domains</h2>
+        <div id="topDomainsTable"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Report -->
+  <main id="tab-report" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card" style="grid-column:1/3">
+        <h2>Live Traffic
+          <span style="font-size:12px;margin-left:12px;color:#8a8ab0">
+            WS: <span id="wsStatus" style="color:#f87171">disconnected</span>
+          </span>
+        </h2>
+        <div style="margin-bottom:10px">
+          <button class="btn btn-sm" id="wsConnectBtn">Connect</button>
+          <button class="btn btn-sm" id="wsPauseBtn">Pause</button>
+          <button class="btn btn-sm" id="wsResumeBtn">Resume</button>
+          <input type="text" id="wsFilter" placeholder="Filter domain..." style="width:180px;margin-left:8px">
+          <button class="btn btn-sm" id="wsFilterBtn">Apply Filter</button>
+        </div>
+        <div id="liveTrafficTable" style="max-height:400px;overflow-y:auto;font-size:12px">
+          <table class="data-table">
+            <thead><tr>
+              <th>Time</th><th>Client</th><th>Domain</th><th>Method</th>
+              <th>Status</th><th>Route</th><th>Latency</th><th>Bytes</th><th>Error</th>
+            </tr></thead>
+            <tbody id="liveTrafficBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Ring Buffer Stats</h2>
+        <div class="stat-cards">
+          <div class="stat-card"><div class="stat-val" id="rbRows">—</div><div class="stat-lbl">Current Rows</div></div>
+          <div class="stat-card"><div class="stat-val" id="rbMax">—</div><div class="stat-lbl">Max Rows</div></div>
+          <div class="stat-card"><div class="stat-val" id="rbRAM">—</div><div class="stat-lbl">RAM (KB)</div></div>
+          <div class="stat-card"><div class="stat-val" id="rbNextClear">—</div><div class="stat-lbl">Next Clear (s)</div></div>
+        </div>
+        <button class="btn btn-danger" id="clearBufferBtn" style="margin-top:10px">Clear Buffer</button>
+      </section>
+
+      <section class="card">
+        <h2>Report Config</h2>
+        <div class="row">
+          <div class="col"><label>Max Rows</label><input type="number" id="rptMaxRows" value="5000"></div>
+          <div class="col"><label>Auto Clear (sec)</label><input type="number" id="rptClearSec" value="600"></div>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle-label">Auto Clear Enabled</label>
+          <input type="checkbox" id="rptClearEnabled" checked>
+        </div>
+        <button class="btn btn-primary" id="saveReportCfgBtn">Save</button>
+        <div id="rptCfgMsg" class="msg"></div>
+      </section>
+
+      <section class="card" style="grid-column:1/3">
+        <h2>Bandwidth Chart (Minutes)</h2>
+        <canvas id="minuteChart" width="800" height="200"></canvas>
+      </section>
+
+      <section class="card">
+        <h2>Top Domains (Report)</h2>
+        <div id="reportTopDomains"></div>
+      </section>
+
+      <section class="card">
+        <h2>Disk Usage</h2>
+        <div id="diskUsageInfo" style="font-size:13px"></div>
+        <div style="margin-top:10px">
+          <label>Export CSV Date</label>
+          <input type="date" id="csvDate">
+          <button class="btn btn-sm" id="exportCsvBtn">Download CSV</button>
+        </div>
+      </section>
+
+      <section class="card" style="grid-column:1/3">
+        <h2>Alerts</h2>
+        <button class="btn btn-sm" id="clearAlertsBtn">Clear Alerts</button>
+        <div id="alertsList" style="max-height:300px;overflow-y:auto;margin-top:10px;font-size:12px"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: My Account -->
+  <main id="tab-account" class="tab-content" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Đổi mật khẩu</h2>
+        <label>Mật khẩu hiện tại</label>
+        <input type="password" id="oldPassword">
+        <label>Mật khẩu mới (tối thiểu 8 ký tự)</label>
+        <input type="password" id="newPassword">
+        <button class="btn btn-primary" id="changePwBtn">Đổi mật khẩu</button>
+        <div id="pwMsg" class="msg"></div>
+      </section>
+      <section class="card">
+        <h2>Two-Factor Authentication (2FA)</h2>
+        <div id="totpStatus">Đang tải…</div>
+        <div id="totpSetupBox" style="display:none;margin-top:10px">
+          <img id="totpQR" alt="QR" style="width:200px;height:200px;background:#fff;padding:6px;border-radius:8px">
+          <p style="font-size:12px;word-break:break-all" id="totpSecretText"></p>
+          <div class="totp-inputs" id="totpConfirmInputs">
+            <input type="tel" maxlength="1" class="totp-digit">
+            <input type="tel" maxlength="1" class="totp-digit">
+            <input type="tel" maxlength="1" class="totp-digit">
+            <input type="tel" maxlength="1" class="totp-digit">
+            <input type="tel" maxlength="1" class="totp-digit">
+            <input type="tel" maxlength="1" class="totp-digit">
+          </div>
+          <button class="btn btn-primary" id="confirmTOTPBtn">Xác nhận bật 2FA</button>
+        </div>
+        <button class="btn btn-primary" id="enableTOTPBtn" style="margin-top:10px">Bật 2FA</button>
+        <button class="btn btn-danger" id="disableTOTPBtn" style="display:none;margin-top:10px">Tắt 2FA</button>
+        <div id="totpMsg" class="msg"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Users (admin) -->
+  <main id="tab-users" class="tab-content admin-only" style="display:none">
+    <div class="grid">
+      <section class="card" style="grid-column:1/3">
+        <h2>Người dùng</h2>
+        <button class="btn btn-primary" id="newUserBtn">+ Tạo User</button>
+        <table class="data-table" id="usersTable">
+          <thead><tr><th>Username</th><th>Role</th><th>2FA</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section class="card" style="grid-column:1/3">
+        <h2>API Tokens</h2>
+        <button class="btn btn-primary" id="newTokenBtn">+ Tạo Token</button>
+        <table class="data-table" id="tokensTable">
+          <thead><tr><th>Name</th><th>Permissions</th><th>Created</th><th>Expires</th><th>Last Used</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: Settings (admin) -->
+  <main id="tab-settings" class="tab-content admin-only" style="display:none">
+    <div class="grid">
+      <section class="card">
+        <h2>Sync</h2>
+        <label>Role</label>
+        <select id="syncRole">
+          <option value="standalone">Standalone</option>
+          <option value="master">Master</option>
+          <option value="slave">Slave</option>
+        </select>
+        <label>Shared Secret</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="syncSecret">
+          <button class="btn btn-sm" id="copySecretBtn">Copy</button>
+        </div>
+        <div id="masterBox" style="display:none">
+          <h3>Slave Nodes</h3>
+          <table class="data-table" id="slavesTable">
+            <thead><tr><th>Name</th><th>URL</th><th>Enabled</th><th>Last Sync</th><th>Status</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <button class="btn btn-sm" id="addSlaveBtn">+ Thêm Slave</button>
+          <button class="btn btn-primary" id="syncNowBtn">Sync Now</button>
+        </div>
+        <div id="slaveBox" style="display:none">
+          <label>Master URL</label>
+          <input type="text" id="masterURL">
+          <div id="slaveLastReceive" class="msg"></div>
+        </div>
+        <button class="btn btn-primary" id="saveSyncBtn">Lưu Sync</button>
+      </section>
+      <section class="card">
+        <h2>DNS</h2>
+        <label>DNS Servers (mỗi dòng 1 server)</label>
+        <textarea id="dnsServers" rows="4"></textarea>
+        <label><input type="checkbox" id="dohEnabled"> DNS over HTTPS</label>
+        <button class="btn btn-primary" id="saveDnsBtn">Lưu DNS</button>
+        <h3>Test DNS</h3>
+        <input type="text" id="dnsTestDomain" placeholder="example.com">
+        <button class="btn btn-sm" id="dnsTestBtn">Test</button>
+        <pre id="dnsTestResult" style="font-size:11px"></pre>
+      </section>
+      <section class="card">
+        <h2>Backup / Restore</h2>
+        <button class="btn btn-primary" id="createBackupBtn">Tạo Backup</button>
+        <button class="btn btn-sm" id="exportConfigBtn">Export Config</button>
+        <label>Import Config (.json)</label>
+        <input type="file" id="importConfigFile" accept=".json">
+        <button class="btn btn-sm" id="importConfigBtn">Import</button>
+        <table class="data-table" id="backupsTable">
+          <thead><tr><th>Filename</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section class="card">
+        <h2>System Info</h2>
+        <div id="systemInfoBox" style="font-size:13px"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

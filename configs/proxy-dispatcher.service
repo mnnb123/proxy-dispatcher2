@@ -1,0 +1,33 @@
+[Unit]
+Description=Proxy Dispatcher Service
+Documentation=https://github.com/mnnb123/proxy-dispatcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/proxy-dispatcher --config /etc/proxy-dispatcher/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/proxy-dispatcher /var/log/proxy-dispatcher
+PrivateTmp=true
+
+# Environment
+Environment=GOMAXPROCS=0
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proxy-dispatcher
+
+[Install]
+WantedBy=multi-user.target

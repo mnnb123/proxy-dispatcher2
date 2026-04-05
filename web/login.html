@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proxy Dispatcher — Login</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <h1>Proxy Dispatcher</h1>
+    <p class="subtitle">Admin Login</p>
+    <form id="loginForm">
+      <label>Username</label>
+      <input type="text" id="username" autocomplete="username" required>
+      <label>Password</label>
+      <input type="password" id="password" autocomplete="current-password" required>
+      <button type="submit" class="btn btn-primary">Đăng nhập</button>
+      <div id="err" class="err"></div>
+    </form>
+    <form id="totpForm" style="display:none;">
+      <p class="subtitle">Nhập mã 2FA (Google Authenticator)</p>
+      <div id="totpInputs" class="totp-inputs">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
+      </div>
+      <div id="totpErr" class="err"></div>
+      <a href="#" id="useRecovery" class="link">Dùng Recovery Code</a>
+      <div id="recoveryWrap" style="display:none;margin-top:10px;">
+        <label>Recovery Code</label>
+        <input type="text" id="recoveryCode" placeholder="xxxxxxxx">
+        <button type="button" id="submitRecovery" class="btn btn-primary">Xác nhận</button>
+      </div>
+    </form>
+  </div>
+<script>
+let sessionToken = '';
+const loginForm = document.getElementById('loginForm');
+const totpForm = document.getElementById('totpForm');
+const errEl = document.getElementById('err');
+const totpErr = document.getElementById('totpErr');
+
+loginForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  errEl.textContent='';
+  const u = document.getElementById('username').value;
+  const p = document.getElementById('password').value;
+  try{
+    const res = await fetch('/api/login',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username:u,password:p})
+    });
+    const data = await res.json();
+    if(!res.ok){ errEl.textContent = data.error || 'Đăng nhập thất bại'; return; }
+    if(data.totp_required){
+      sessionToken = data.session_token;
+      loginForm.style.display='none';
+      totpForm.style.display='block';
+      document.querySelector('.totp-digit').focus();
+      return;
+    }
+    sessionStorage.setItem('pd_token', data.token);
+    if(data.role) sessionStorage.setItem('pd_role', data.role);
+    window.location.href='dashboard.html';
+  }catch(err){ errEl.textContent = 'Lỗi mạng'; }
+});
+
+function initTOTPInputs(){
+  const inputs = document.querySelectorAll('.totp-digit');
+  inputs.forEach((inp, idx)=>{
+    inp.addEventListener('input', ()=>{
+      inp.value = inp.value.replace(/\D/g,'');
+      if(inp.value && idx < inputs.length-1) inputs[idx+1].focus();
+      const code = Array.from(inputs).map(i=>i.value).join('');
+      if(code.length === 6) submitTOTP(code);
+    });
+    inp.addEventListener('keydown', (e)=>{
+      if(e.key==='Backspace' && !inp.value && idx>0) inputs[idx-1].focus();
+    });
+    inp.addEventListener('paste', (e)=>{
+      e.preventDefault();
+      const text = (e.clipboardData.getData('text')||'').replace(/\D/g,'').slice(0,6);
+      for(let i=0;i<text.length && i<inputs.length;i++) inputs[i].value = text[i];
+      if(text.length===6) submitTOTP(text);
+    });
+  });
+}
+initTOTPInputs();
+
+async function submitTOTP(code){
+  totpErr.textContent='';
+  const res = await fetch('/api/login/totp',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({session_token: sessionToken, code: code})
+  });
+  const data = await res.json();
+  if(!res.ok){
+    totpErr.textContent = data.error || 'Mã không đúng';
+    document.querySelectorAll('.totp-digit').forEach(i=>i.value='');
+    document.querySelector('.totp-digit').focus();
+    return;
+  }
+  sessionStorage.setItem('pd_token', data.token);
+  if(data.role) sessionStorage.setItem('pd_role', data.role);
+  window.location.href='dashboard.html';
+}
+
+document.getElementById('useRecovery').addEventListener('click', (e)=>{
+  e.preventDefault();
+  document.getElementById('recoveryWrap').style.display='block';
+});
+document.getElementById('submitRecovery').addEventListener('click', async ()=>{
+  const rc = document.getElementById('recoveryCode').value.trim();
+  const res = await fetch('/api/login/totp',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({session_token: sessionToken, recovery_code: rc})
+  });
+  const data = await res.json();
+  if(!res.ok){ totpErr.textContent = data.error || 'Recovery code sai'; return; }
+  sessionStorage.setItem('pd_token', data.token);
+  if(data.role) sessionStorage.setItem('pd_role', data.role);
+  window.location.href='dashboard.html';
+});
+</script>
+</body>
+</html>
