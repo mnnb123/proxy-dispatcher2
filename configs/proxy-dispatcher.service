@@ -1,6 +1,6 @@
 [Unit]
 Description=Proxy Dispatcher Service
-Documentation=https://github.com/mnnb123/proxy-dispatcher
+Documentation=https://github.com/mnnb123/proxy-dispatcher2
 After=network-online.target
 Wants=network-online.target
 

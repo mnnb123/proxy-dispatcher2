@@ -3,11 +3,11 @@ set -euo pipefail
 
 # ============================================================
 # Proxy Dispatcher - Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/mnnb123/proxy-dispatcher/main/scripts/install.sh | sudo bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/mnnb123/proxy-dispatcher2/main/scripts/install.sh | sudo bash
 # ============================================================
 
 APP_NAME="proxy-dispatcher"
-REPO="mnnb123/proxy-dispatcher"
+REPO="mnnb123/proxy-dispatcher2"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/proxy-dispatcher"
 LOG_DIR="/var/log/proxy-dispatcher"
@@ -199,7 +199,7 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=Proxy Dispatcher Service
-Documentation=https://github.com/mnnb123/proxy-dispatcher
+Documentation=https://github.com/mnnb123/proxy-dispatcher2
 After=network-online.target
 Wants=network-online.target
 

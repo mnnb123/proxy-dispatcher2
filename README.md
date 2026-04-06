@@ -6,7 +6,7 @@ nhieu port tren IP VPS. Ho tro HTTP + SOCKS5. Quan ly qua Web Panel.
 ## Cai dat (1 lenh)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mnnb123/proxy-dispatcher/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mnnb123/proxy-dispatcher2/main/scripts/install.sh | sudo bash
 ```
 
 Sau khi cai, truy cap `http://YOUR_VPS_IP:8000` de quan ly.
@@ -53,7 +53,7 @@ sudo systemctl restart proxy-dispatcher
 sudo proxy-dispatcher --reset-admin
 
 # Go cai dat
-curl -fsSL https://raw.githubusercontent.com/mnnb123/proxy-dispatcher/main/scripts/uninstall.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mnnb123/proxy-dispatcher2/main/scripts/uninstall.sh | sudo bash
 ```
 
 ## Cau truc files
@@ -68,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/mnnb123/proxy-dispatcher/main/scrip
 ## Build tu source
 
 ```bash
-git clone https://github.com/mnnb123/proxy-dispatcher
+git clone https://github.com/mnnb123/proxy-dispatcher2
 cd proxy-dispatcher
 make build
 # Binary: dist/proxy-dispatcher-linux-amd64
