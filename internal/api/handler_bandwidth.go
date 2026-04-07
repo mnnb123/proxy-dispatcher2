@@ -48,3 +48,8 @@ func (s *Server) handleBandwidthStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBandwidthSnapshot(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, s.tracker.GetSnapshot())
 }
+
+func (s *Server) handleBandwidthClear(w http.ResponseWriter, r *http.Request) {
+	s.tracker.ResetAll()
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}

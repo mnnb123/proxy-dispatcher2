@@ -18,6 +18,8 @@ type DomainStat struct {
 	LastSeen        atomic.Int64
 	AvgResponseSize int64
 	SampleCount     int64
+	ProxyBytes      atomic.Int64
+	DirectBytes     atomic.Int64
 }
 
 // DomainSummary is a read-only snapshot of a DomainStat.
@@ -26,6 +28,7 @@ type DomainSummary struct {
 	BytesTotal   int64  `json:"bytes_total"`
 	RequestCount int64  `json:"request_count"`
 	AvgSize      int64  `json:"avg_size"`
+	RouteType    string `json:"route_type"`
 }
 
 // TrackerSnapshot is a point-in-time snapshot of all tracker counters.
@@ -97,6 +100,13 @@ func (t *Tracker) Record(domain string, bytes int64, routeType string) {
 	ds.RequestCount.Add(1)
 	ds.LastSeen.Store(time.Now().Unix())
 
+	switch routeType {
+	case "proxy":
+		ds.ProxyBytes.Add(bytes)
+	case "direct", "resource":
+		ds.DirectBytes.Add(bytes)
+	}
+
 	// Rolling average: incremental update.
 	ds.SampleCount++
 	ds.AvgResponseSize = ds.AvgResponseSize + (bytes-ds.AvgResponseSize)/ds.SampleCount
@@ -134,11 +144,20 @@ func (t *Tracker) GetSnapshot() TrackerSnapshot {
 	t.mu.RLock()
 	summaries := make([]DomainSummary, 0, len(t.domainStats))
 	for _, ds := range t.domainStats {
+		proxyB := ds.ProxyBytes.Load()
+		directB := ds.DirectBytes.Load()
+		rt := "proxy"
+		if directB > proxyB {
+			rt = "direct"
+		} else if directB > 0 && proxyB > 0 {
+			rt = "mixed"
+		}
 		summaries = append(summaries, DomainSummary{
 			Domain:       ds.Domain,
 			BytesTotal:   ds.BytesThisDay.Load(),
 			RequestCount: ds.RequestCount.Load(),
 			AvgSize:      ds.AvgResponseSize,
+			RouteType:    rt,
 		})
 	}
 	t.mu.RUnlock()
@@ -178,6 +197,8 @@ func (t *Tracker) ResetDaily() {
 		ds.RequestCount.Store(0)
 		ds.SampleCount = 0
 		ds.AvgResponseSize = 0
+		ds.ProxyBytes.Store(0)
+		ds.DirectBytes.Store(0)
 	}
 	t.totalProxyBytes.Store(0)
 	t.totalDirectBytes.Store(0)
@@ -185,6 +206,18 @@ func (t *Tracker) ResetDaily() {
 	t.totalProxyReqs.Store(0)
 	t.totalBypassReqs.Store(0)
 	t.currentDay = time.Now().Format("2006-01-02")
+}
+
+// ResetAll clears all counters and domain stats immediately.
+func (t *Tracker) ResetAll() {
+	t.mu.Lock()
+	t.domainStats = make(map[string]*DomainStat)
+	t.mu.Unlock()
+	t.totalProxyBytes.Store(0)
+	t.totalDirectBytes.Store(0)
+	t.totalBlockedReqs.Store(0)
+	t.totalProxyReqs.Store(0)
+	t.totalBypassReqs.Store(0)
 }
 
 // Cleanup removes domains not seen in 24 hours.

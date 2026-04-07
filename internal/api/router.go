@@ -162,6 +162,7 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("POST /api/config/bandwidth-budget", s.handlePostBandwidthBudget)
 	s.mux.HandleFunc("GET /api/bandwidth/status", s.handleBandwidthStatus)
 	s.mux.HandleFunc("GET /api/bandwidth/snapshot", s.handleBandwidthSnapshot)
+	s.mux.HandleFunc("POST /api/bandwidth/clear", s.handleBandwidthClear)
 
 	// Phase 4 routes.
 	s.mux.HandleFunc("GET /api/report/recent", s.handleReportRecent)

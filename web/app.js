@@ -495,13 +495,27 @@ function drawPieChart(proxy, direct, blocked) {
 function renderTopDomains(domains) {
   const c = document.getElementById('topDomainsTable');
   if (!domains.length) { c.innerHTML = '<p style="color:#8a8ab0;font-size:13px">No data yet</p>'; return; }
-  let html = '<table class="mini-table"><tr><th>Domain</th><th>Bytes</th><th>Requests</th><th>Avg Size</th></tr>';
+  let html = '<table class="mini-table"><tr><th>Domain</th><th>Route</th><th>Bytes</th><th>Requests</th><th>Avg Size</th></tr>';
   domains.forEach(d => {
-    html += '<tr><td>' + d.domain + '</td><td>' + formatBytes(d.bytes_total) + '</td><td>' + d.request_count + '</td><td>' + formatBytes(d.avg_size) + '</td></tr>';
+    const rt = d.route_type || 'proxy';
+    const color = rt === 'direct' ? '#4ade80' : rt === 'mixed' ? '#fbbf24' : '#818cf8';
+    const badge = '<span style="color:' + color + ';font-weight:600">' + rt.toUpperCase() + '</span>';
+    html += '<tr><td>' + d.domain + '</td><td>' + badge + '</td><td>' + formatBytes(d.bytes_total) + '</td><td>' + d.request_count + '</td><td>' + formatBytes(d.avg_size) + '</td></tr>';
   });
   html += '</table>';
   c.innerHTML = html;
 }
+
+document.getElementById('clearBwBtn').addEventListener('click', async () => {
+  if (!confirm('Clear tat ca bandwidth data?')) return;
+  const r = await apiCall('POST', '/api/bandwidth/clear');
+  if (r.ok) {
+    setMsg('bwClearMsg', 'Data cleared', false);
+    refreshBandwidth();
+  } else {
+    setMsg('bwClearMsg', 'Clear failed', true);
+  }
+});
 
 // Tab-aware auto-refresh for bandwidth.
 document.querySelectorAll('.tab-btn').forEach(btn => {
