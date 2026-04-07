@@ -37,24 +37,19 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // ── Load all config ────────────────────────────────────────
 async function loadConfig() {
-  // Input
+  // Unified proxy tab: input + output
   const inp = await apiCall('GET', '/api/config/input');
   if (inp.ok) {
     document.getElementById('inputType').value = inp.data.input_type || 'http';
+    document.getElementById('vpsIp').value = inp.data.vps_ip || '';
+    document.getElementById('startPort').value = inp.data.start_port || 30001;
     const lines = (inp.data.proxies || []).map(p => {
       let s = p.host + ':' + p.port;
       if (p.user) s += ':' + p.user + ':' + p.pass;
       return s;
     });
     document.getElementById('inputList').value = lines.join('\n');
-  }
-  // Output
-  const out = await apiCall('GET', '/api/config/output');
-  if (out.ok) {
-    document.getElementById('vpsIp').value = out.data.vps_ip || '';
-    document.getElementById('startPort').value = out.data.start_port || 30001;
-    document.getElementById('count').value = out.data.count || 10;
-    document.getElementById('outputList').value = (out.data.list || []).join('\n');
+    renderMappingTable(inp.data.mapping || []);
   }
   // Status
   const st = await apiCall('GET', '/api/status');
@@ -72,11 +67,34 @@ async function loadConfig() {
   loadBlockDomains();
 }
 
-// ── Input Proxy ────────────────────────────────────────────
+function renderMappingTable(mapping) {
+  const tbody = document.getElementById('mappingTableBody');
+  const countEl = document.getElementById('proxyCount');
+  if (!mapping || mapping.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8">Chua co proxy nao. Nhap proxy vao o tren va nhan Save & Apply.</td></tr>';
+    countEl.textContent = '';
+    return;
+  }
+  countEl.textContent = '(' + mapping.length + ' proxies)';
+  tbody.innerHTML = mapping.map((m, i) => {
+    const inputStr = m.user ? m.host + ':' + m.port + ':' + m.user + ':***' : m.host + ':' + m.port;
+    return '<tr>' +
+      '<td>' + (i + 1) + '</td>' +
+      '<td><code>' + inputStr + '</code></td>' +
+      '<td>' + (m.type || 'http') + '</td>' +
+      '<td>' + m.output_port + '</td>' +
+      '<td><code>' + m.output_addr + '</code></td>' +
+      '</tr>';
+  }).join('');
+}
+
+// ── Proxy (unified input + output) ────────────────────────
 document.getElementById('saveInputBtn').addEventListener('click', async () => {
   const body = {
     input_type: document.getElementById('inputType').value,
     raw_text: document.getElementById('inputList').value,
+    vps_ip: document.getElementById('vpsIp').value,
+    start_port: parseInt(document.getElementById('startPort').value, 10),
   };
   const r = await apiCall('POST', '/api/config/input', body);
   if (!r.ok) {
@@ -84,27 +102,20 @@ document.getElementById('saveInputBtn').addEventListener('click', async () => {
     setMsg('inputMsg', errs || r.data.error || 'Save failed', true);
     return;
   }
-  setMsg('inputMsg', 'Saved ' + r.data.count + ' proxies', false);
-});
-
-// ── Output Proxy ───────────────────────────────────────────
-document.getElementById('saveOutputBtn').addEventListener('click', async () => {
-  const body = {
-    vps_ip: document.getElementById('vpsIp').value,
-    start_port: parseInt(document.getElementById('startPort').value, 10),
-    count: parseInt(document.getElementById('count').value, 10),
-  };
-  const r = await apiCall('POST', '/api/config/output', body);
-  if (!r.ok) { setMsg('outputMsg', r.data.error || 'Save failed', true); return; }
-  setMsg('outputMsg', 'Saved', false);
+  setMsg('inputMsg', 'Saved ' + r.data.count + ' proxies → ' + r.data.count + ' output ports', false);
   loadConfig();
 });
 
-document.getElementById('copyBtn').addEventListener('click', () => {
-  const text = document.getElementById('outputList').value;
+document.getElementById('copyBtn').addEventListener('click', async () => {
+  const inp = await apiCall('GET', '/api/config/input');
+  if (!inp.ok || !inp.data.mapping || inp.data.mapping.length === 0) {
+    setMsg('inputMsg', 'Khong co output de copy', true);
+    return;
+  }
+  const text = inp.data.mapping.map(m => m.output_addr).join('\n');
   navigator.clipboard.writeText(text).then(
-    () => setMsg('outputMsg', 'Copied to clipboard', false),
-    () => setMsg('outputMsg', 'Copy failed', true)
+    () => setMsg('inputMsg', 'Copied ' + inp.data.mapping.length + ' output addresses', false),
+    () => setMsg('inputMsg', 'Copy failed', true)
   );
 });
 

@@ -17,10 +17,9 @@
 
   <nav class="tab-bar">
     <button class="tab-btn active" data-tab="tab-dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="tab-proxy">Proxy</button>
     <button class="tab-btn" data-tab="tab-groups">Proxy Groups</button>
     <button class="tab-btn" data-tab="tab-portmap">Port Mapping</button>
-    <button class="tab-btn" data-tab="tab-input">Input Proxy</button>
-    <button class="tab-btn" data-tab="tab-output">Output Proxy</button>
     <button class="tab-btn" data-tab="tab-bypass">Bypass Rules</button>
     <button class="tab-btn" data-tab="tab-block">Block List</button>
     <button class="tab-btn" data-tab="tab-whitelist">Whitelist</button>
@@ -124,49 +123,52 @@
     </div>
   </main>
 
-  <!-- TAB: Input Proxy -->
-  <main id="tab-input" class="tab-content" style="display:none">
+  <!-- TAB: Proxy (Input + Output unified) -->
+  <main id="tab-proxy" class="tab-content" style="display:none">
     <div class="grid">
-      <section class="card">
-        <h2>Input Proxy</h2>
-        <label>Connection Type</label>
-        <select id="inputType">
-          <option value="http">HTTP</option>
-          <option value="socks5">SOCKS5</option>
-        </select>
-        <label>Proxy List (host:port hoặc host:port:user:pass)</label>
-        <textarea id="inputList" rows="14" spellcheck="false"></textarea>
-        <button id="saveInputBtn" class="btn btn-primary">Save Input</button>
+      <section class="card" style="grid-column:1/3">
+        <h2>Proxy Management</h2>
+        <p style="color:#94a3b8;margin-bottom:12px">Nhap proxy dau vao — moi proxy tu dong map 1:1 voi 1 port output tren VPS.</p>
+        <div class="row">
+          <div class="col">
+            <label>Connection Type</label>
+            <select id="inputType">
+              <option value="http">HTTP</option>
+              <option value="socks5">SOCKS5</option>
+            </select>
+          </div>
+          <div class="col">
+            <label>VPS IP</label>
+            <input type="text" id="vpsIp">
+          </div>
+          <div class="col">
+            <label>Start Port</label>
+            <input type="number" id="startPort" value="30001">
+          </div>
+        </div>
+        <label>Proxy List (host:port hoac host:port:user:pass — moi dong 1 proxy)</label>
+        <textarea id="inputList" rows="10" spellcheck="false" placeholder="1.2.3.4:8080&#10;5.6.7.8:1080:user:pass"></textarea>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button id="saveInputBtn" class="btn btn-primary">Save & Apply</button>
+          <button id="copyBtn" class="btn btn-success">Copy Output</button>
+        </div>
         <div id="inputMsg" class="msg"></div>
       </section>
 
-      <section class="card">
-        <h2>Change Password</h2>
-        <label>Old Password</label>
-        <input type="password" id="oldPass">
-        <label>New Password</label>
-        <input type="password" id="newPass">
-        <button id="changePassBtn" class="btn btn-primary">Change Password</button>
-        <div id="passMsg" class="msg"></div>
-      </section>
-    </div>
-  </main>
-
-  <!-- TAB: Output Proxy -->
-  <main id="tab-output" class="tab-content" style="display:none">
-    <div class="grid">
-      <section class="card">
-        <h2>Output Proxy</h2>
-        <label>VPS IP</label>
-        <input type="text" id="vpsIp">
-        <div class="row">
-          <div class="col"><label>Start Port</label><input type="number" id="startPort"></div>
-          <div class="col"><label>Count</label><input type="number" id="count"></div>
-        </div>
-        <button id="saveOutputBtn" class="btn btn-primary">Save Output</button>
-        <label>Output List</label>
-        <textarea id="outputList" rows="10" readonly></textarea>
-        <button id="copyBtn" class="btn btn-success">Copy All</button>
+      <section class="card" style="grid-column:1/3">
+        <h2>Mapping Table <span id="proxyCount" style="font-size:14px;color:#94a3b8"></span></h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Input Proxy</th>
+              <th>Type</th>
+              <th>Output Port</th>
+              <th>Output Address</th>
+            </tr>
+          </thead>
+          <tbody id="mappingTableBody"></tbody>
+        </table>
         <div id="outputMsg" class="msg"></div>
       </section>
     </div>

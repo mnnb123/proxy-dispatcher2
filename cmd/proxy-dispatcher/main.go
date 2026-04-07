@@ -408,6 +408,22 @@ func main() {
 		budgetCtrl.Reload(cfg.BandwidthBudget)
 		dnsMgr.Reload(cfg.SystemConfig)
 		directDialer.SetResolver(dnsMgr.GetResolver())
+
+		// Restart listeners to match new port mappings.
+		if len(cfg.PortMappings) > 0 {
+			for _, m := range cfg.PortMappings {
+				count := m.PortEnd - m.PortStart + 1
+				if count > 0 {
+					if err := lm.Restart(m.PortStart, count); err != nil {
+						logger.Warn("listener restart failed", "error", err)
+					}
+				}
+			}
+		} else if cfg.OutputCount > 0 {
+			if err := lm.Restart(cfg.OutputStartPort, cfg.OutputCount); err != nil {
+				logger.Warn("listener restart failed", "error", err)
+			}
+		}
 		return nil
 	}
 

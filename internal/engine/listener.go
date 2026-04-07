@@ -122,6 +122,24 @@ func (lm *ListenerManager) Stop() error {
 	return nil
 }
 
+// Restart stops all current listeners and starts new ones on the given port range.
+func (lm *ListenerManager) Restart(startPort int, count int) error {
+	// Close existing listeners.
+	lm.mu.Lock()
+	for _, ln := range lm.listeners {
+		_ = ln.Close()
+	}
+	lm.listeners = nil
+	lm.ports = nil
+	lm.connCount = make(map[int]*atomic.Int32)
+	lm.mu.Unlock()
+
+	if count <= 0 {
+		return nil
+	}
+	return lm.Start(startPort, count)
+}
+
 // ActivePorts returns the list of ports currently being listened on.
 func (lm *ListenerManager) ActivePorts() []int {
 	lm.mu.RLock()
