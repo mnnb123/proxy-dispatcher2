@@ -66,6 +66,14 @@ func (lm *ListenerManager) acceptLoop(listener net.Listener, port int) {
 		}
 	}()
 
+	// Capture counter once so it's safe even if connCount map is replaced.
+	lm.mu.RLock()
+	counter := lm.connCount[port]
+	lm.mu.RUnlock()
+	if counter == nil {
+		return
+	}
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -76,25 +84,25 @@ func (lm *ListenerManager) acceptLoop(listener net.Listener, port int) {
 			return
 		}
 
-		if lm.connCount[port].Load() >= int32(lm.maxConnPerPort) {
+		if counter.Load() >= int32(lm.maxConnPerPort) {
 			lm.logger.Warn("max connections reached, rejecting", "port", port)
 			conn.Close()
 			continue
 		}
-		lm.connCount[port].Add(1)
+		counter.Add(1)
 		lm.wg.Add(1)
-		go lm.handleConn(conn, port)
+		go lm.handleConn(conn, port, counter)
 	}
 }
 
-func (lm *ListenerManager) handleConn(conn net.Conn, port int) {
+func (lm *ListenerManager) handleConn(conn net.Conn, port int, counter *atomic.Int32) {
 	defer func() {
 		if r := recover(); r != nil {
 			lm.logger.Error("handleConn panic", "port", port, "recover", r)
 		}
 	}()
 	defer lm.wg.Done()
-	defer lm.connCount[port].Add(-1)
+	defer counter.Add(-1)
 	defer conn.Close()
 	lm.handler(conn)
 }
@@ -124,15 +132,17 @@ func (lm *ListenerManager) Stop() error {
 
 // Restart stops all current listeners and starts new ones on the given port range.
 func (lm *ListenerManager) Restart(startPort int, count int) error {
-	// Close existing listeners.
+	// Close existing listeners but keep connCount for in-flight goroutines.
 	lm.mu.Lock()
 	for _, ln := range lm.listeners {
 		_ = ln.Close()
 	}
 	lm.listeners = nil
 	lm.ports = nil
-	lm.connCount = make(map[int]*atomic.Int32)
 	lm.mu.Unlock()
+
+	// Brief grace period for accept loops to exit.
+	time.Sleep(100 * time.Millisecond)
 
 	if count <= 0 {
 		return nil
