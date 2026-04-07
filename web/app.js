@@ -119,19 +119,6 @@ document.getElementById('copyBtn').addEventListener('click', async () => {
   );
 });
 
-// ── Change Password ────────────────────────────────────────
-document.getElementById('changePassBtn').addEventListener('click', async () => {
-  const body = {
-    old_password: document.getElementById('oldPass').value,
-    new_password: document.getElementById('newPass').value,
-  };
-  const r = await apiCall('POST', '/api/password', body);
-  if (!r.ok) { setMsg('passMsg', r.data.error || 'Failed', true); return; }
-  setMsg('passMsg', 'Password changed', false);
-  document.getElementById('oldPass').value = '';
-  document.getElementById('newPass').value = '';
-});
-
 // ── Logout ─────────────────────────────────────────────────
 document.getElementById('logoutBtn').addEventListener('click', () => {
   authToken = null;
