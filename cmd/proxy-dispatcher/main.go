@@ -260,9 +260,12 @@ func main() {
 				logger.Warn("no proxy available", "group", group.Name)
 				return
 			}
-			if err := httpH.HandleConnection(ctx, buffConn, *proxy); err != nil {
+			pr, err := httpH.HandleConnection(ctx, buffConn, *proxy)
+			if err != nil {
 				logger.Debug("http fallback ended", "error", err)
 			}
+			tracker.Record("unknown", pr.BytesSent+pr.BytesReceived, "proxy")
+			recordEntry(clientIP, "unknown", "", "", "", "http", "proxy", fmt.Sprintf("%s:%d", proxy.Host, proxy.Port), "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 			return
 		}
 
@@ -333,8 +336,12 @@ func main() {
 				}
 				if len(reqInfo.ConsumedBytes) > 0 {
 					if proxy.Type == "http" && reqInfo.IsHTTPS {
-						if err := httpH.HandleConnection(ctx, engine.WrapPrefixAsBuffered(prefixConn), *proxy); err != nil {
+						pr, err := httpH.HandleConnection(ctx, engine.WrapPrefixAsBuffered(prefixConn), *proxy)
+						if err != nil {
 							logger.Debug("http session ended", "error", err)
+						}
+						finalRes = engine.SizeForwardResult{
+							PipeResult: pr,
 						}
 						proxyConn.Close()
 						return nil

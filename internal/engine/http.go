@@ -37,16 +37,17 @@ var hopByHopHeaders = map[string]bool{
 
 // HandleConnection reads the first request from clientConn and dispatches
 // either a CONNECT tunnel or plain HTTP forward through the upstream proxy.
-func (h *HttpHandler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry) error {
+// It returns the byte counts from the pipe session.
+func (h *HttpHandler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry) (PipeResult, error) {
 	reader := bufio.NewReader(clientConn)
 	requestLine, err := reader.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("read request line: %w", err)
+		return PipeResult{}, fmt.Errorf("read request line: %w", err)
 	}
 	requestLine = strings.TrimRight(requestLine, "\r\n")
 	parts := strings.SplitN(requestLine, " ", 3)
 	if len(parts) < 3 {
-		return fmt.Errorf("malformed request line: %q", requestLine)
+		return PipeResult{}, fmt.Errorf("malformed request line: %q", requestLine)
 	}
 
 	method := parts[0]
@@ -56,7 +57,7 @@ func (h *HttpHandler) HandleConnection(ctx context.Context, clientConn *Buffered
 	tp := textproto.NewReader(reader)
 	mimeHeader, err := tp.ReadMIMEHeader()
 	if err != nil {
-		return fmt.Errorf("read headers: %w", err)
+		return PipeResult{}, fmt.Errorf("read headers: %w", err)
 	}
 
 	if method == "CONNECT" {
@@ -65,7 +66,7 @@ func (h *HttpHandler) HandleConnection(ctx context.Context, clientConn *Buffered
 	return h.handlePlainHTTP(ctx, clientConn, reader, requestLine, mimeHeader, proxy)
 }
 
-func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedConn, clientReader *bufio.Reader, targetHost string, proxy config.ProxyEntry) error {
+func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedConn, clientReader *bufio.Reader, targetHost string, proxy config.ProxyEntry) (PipeResult, error) {
 	var proxyConn net.Conn
 	var err error
 
@@ -74,7 +75,7 @@ func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedCon
 		d := net.Dialer{Timeout: 15 * time.Second}
 		proxyConn, err = d.DialContext(ctx, "tcp", net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port)))
 		if err != nil {
-			return fmt.Errorf("dial http proxy: %w", err)
+			return PipeResult{}, fmt.Errorf("dial http proxy: %w", err)
 		}
 		req := "CONNECT " + targetHost + " HTTP/1.1\r\nHost: " + targetHost + "\r\n"
 		if proxy.User != "" {
@@ -83,31 +84,31 @@ func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedCon
 		req += "\r\n"
 		if _, err := proxyConn.Write([]byte(req)); err != nil {
 			proxyConn.Close()
-			return fmt.Errorf("write connect: %w", err)
+			return PipeResult{}, fmt.Errorf("write connect: %w", err)
 		}
 		buf := make([]byte, 4096)
 		n, err := proxyConn.Read(buf)
 		if err != nil {
 			proxyConn.Close()
-			return fmt.Errorf("read connect response: %w", err)
+			return PipeResult{}, fmt.Errorf("read connect response: %w", err)
 		}
 		resp := string(buf[:n])
 		if len(resp) < 12 || resp[9:12] != "200" {
 			proxyConn.Close()
-			return fmt.Errorf("upstream CONNECT failed: %s", resp)
+			return PipeResult{}, fmt.Errorf("upstream CONNECT failed: %s", resp)
 		}
 	case "socks5":
 		proxyConn, err = dialThroughSOCKS5Proxy(ctx, proxy, targetHost)
 		if err != nil {
-			return err
+			return PipeResult{}, err
 		}
 	default:
-		return fmt.Errorf("unsupported proxy type: %s", proxy.Type)
+		return PipeResult{}, fmt.Errorf("unsupported proxy type: %s", proxy.Type)
 	}
 	defer proxyConn.Close()
 
 	if _, err := clientConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-		return fmt.Errorf("write 200: %w", err)
+		return PipeResult{}, fmt.Errorf("write 200: %w", err)
 	}
 
 	// Flush any bytes the client sent after the CONNECT headers that were
@@ -115,19 +116,19 @@ func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedCon
 	if buffered := clientReader.Buffered(); buffered > 0 {
 		peek, _ := clientReader.Peek(buffered)
 		if _, err := proxyConn.Write(peek); err != nil {
-			return fmt.Errorf("flush buffered: %w", err)
+			return PipeResult{}, fmt.Errorf("flush buffered: %w", err)
 		}
 	}
 
-	Pipe(ctx, clientConn, proxyConn, 60*time.Second)
-	return nil
+	pr := Pipe(ctx, clientConn, proxyConn, 60*time.Second)
+	return pr, nil
 }
 
-func (h *HttpHandler) handlePlainHTTP(ctx context.Context, clientConn *BufferedConn, reader *bufio.Reader, requestLine string, headers textproto.MIMEHeader, proxy config.ProxyEntry) error {
+func (h *HttpHandler) handlePlainHTTP(ctx context.Context, clientConn *BufferedConn, reader *bufio.Reader, requestLine string, headers textproto.MIMEHeader, proxy config.ProxyEntry) (PipeResult, error) {
 	d := net.Dialer{Timeout: 15 * time.Second}
 	proxyConn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port)))
 	if err != nil {
-		return fmt.Errorf("dial http proxy: %w", err)
+		return PipeResult{}, fmt.Errorf("dial http proxy: %w", err)
 	}
 	defer proxyConn.Close()
 
@@ -154,27 +155,30 @@ func (h *HttpHandler) handlePlainHTTP(ctx context.Context, clientConn *BufferedC
 	}
 	sb.WriteString("\r\n")
 
+	reqBytes := int64(len(sb.String()))
 	if _, err := proxyConn.Write([]byte(sb.String())); err != nil {
-		return fmt.Errorf("write request: %w", err)
+		return PipeResult{}, fmt.Errorf("write request: %w", err)
 	}
 
 	// If there's a body, stream it based on Content-Length or
 	// Transfer-Encoding: chunked.
 	if cl := headers.Get("Content-Length"); cl != "" {
 		if n, err := strconv.ParseInt(cl, 10, 64); err == nil && n > 0 {
-			if _, err := io.CopyN(proxyConn, reader, n); err != nil {
-				return fmt.Errorf("forward body: %w", err)
+			written, copyErr := io.CopyN(proxyConn, reader, n)
+			reqBytes += written
+			if copyErr != nil {
+				return PipeResult{}, fmt.Errorf("forward body: %w", copyErr)
 			}
 		}
 	} else if te := headers.Get("Transfer-Encoding"); strings.EqualFold(te, "chunked") {
-		if _, err := io.Copy(proxyConn, reader); err != nil {
-			return fmt.Errorf("forward chunked body: %w", err)
+		written, copyErr := io.Copy(proxyConn, reader)
+		reqBytes += written
+		if copyErr != nil {
+			return PipeResult{}, fmt.Errorf("forward chunked body: %w", copyErr)
 		}
 	}
 
 	// Forward response as raw bytes.
-	if _, err := io.Copy(clientConn.Conn, proxyConn); err != nil && err != io.EOF {
-		return fmt.Errorf("forward response: %w", err)
-	}
-	return nil
+	respBytes, _ := io.Copy(clientConn.Conn, proxyConn)
+	return PipeResult{BytesSent: reqBytes, BytesReceived: respBytes}, nil
 }
