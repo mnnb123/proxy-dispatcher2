@@ -52,7 +52,8 @@ func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, 
 	}
 	for _, m := range mappings {
 		if _, ok := gm.groups[m.GroupName]; !ok {
-			return nil, fmt.Errorf("port mapping references unknown group: %s", m.GroupName)
+			logger.Warn("port mapping references unknown group, skipping", "group", m.GroupName)
+			continue
 		}
 		for p := m.PortStart; p <= m.PortEnd; p++ {
 			gm.portMap[p] = m.GroupName
