@@ -341,15 +341,11 @@ func (c *AppConfig) MigrateToGroups() bool {
 		}}
 		changed = true
 	}
-	if len(c.PortMappings) == 0 && c.OutputCount > 0 && c.OutputStartPort > 0 {
-		group := "default"
-		if len(c.ProxyGroups) > 0 {
-			group = c.ProxyGroups[0].Name
-		}
+	if len(c.PortMappings) == 0 && c.OutputCount > 0 && c.OutputStartPort > 0 && len(c.ProxyGroups) > 0 {
 		c.PortMappings = []PortMapping{{
 			PortStart: c.OutputStartPort,
 			PortEnd:   c.OutputStartPort + c.OutputCount - 1,
-			GroupName: group,
+			GroupName: c.ProxyGroups[0].Name,
 		}}
 		changed = true
 	}
