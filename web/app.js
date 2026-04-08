@@ -408,7 +408,7 @@ async function refreshAbpStats() {
     const tr = document.createElement('tr');
     tr.style.color = '#4ade80';
     const ts = new Date(ev.time).toLocaleTimeString();
-    tr.innerHTML = '<td>' + ts + '</td><td style="font-weight:600">' + ev.domain +
+    tr.innerHTML = '<td>' + ts + '</td><td>' + (ev.port||'') + '</td><td style="font-weight:600">' + ev.domain +
       '</td><td>' + formatBytes(ev.size) + '</td><td>' + formatBytes(ev.threshold) +
       '</td><td><span style="background:#166534;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:600">ADDED TO BYPASS</span></td>';
     tbody.appendChild(tr);

@@ -308,7 +308,8 @@
       <section class="card">
         <h2>Auto Bypass (Size-based)</h2>
         <p style="color:#8a8ab0;font-size:13px;margin-bottom:12px">
-          Khi domain không nằm trong Bypass Rules mà tổng lưu lượng vượt ngưỡng, hệ thống tự động thêm vào Bypass Rules &rarr; lần sau đi Direct.
+          Khi 1 kết nối trên 1 port vượt ngưỡng Size Threshold &rarr; domain tự động thêm vào Bypass Rules &rarr; lần sau đi Direct.<br>
+          <span style="color:#f59e0b">Lưu ý:</span> Domain nằm trong <b>Force Proxy</b> (bên phải) sẽ <b>không bị auto-bypass</b>, luôn đi qua proxy.
         </p>
         <div class="toggle-row">
           <label class="toggle-label">Enable Auto Bypass</label>
@@ -332,7 +333,7 @@
         <div id="abpEventsTable" style="max-height:300px;overflow-y:auto;font-size:12px">
           <table class="data-table">
             <thead><tr>
-              <th>Time</th><th>Domain</th><th>Traffic Size</th><th>Threshold</th><th>Status</th>
+              <th>Time</th><th>Port</th><th>Domain</th><th>Traffic Size</th><th>Threshold</th><th>Status</th>
             </tr></thead>
             <tbody id="abpEventsBody"></tbody>
           </table>
@@ -342,6 +343,9 @@
 
       <section class="card">
         <h2>Force Proxy Domains</h2>
+        <p style="color:#8a8ab0;font-size:13px;margin-bottom:12px">
+          Domain trong danh sách này <b style="color:#f59e0b">luôn đi qua Proxy</b>, không bị Auto Bypass dù traffic lớn.
+        </p>
         <label>Domain List (1 domain/dòng)</label>
         <textarea id="forceProxyList" rows="14" spellcheck="false" placeholder="*.netflix.com&#10;*.spotify.com"></textarea>
         <button class="btn btn-primary" id="saveForceProxyBtn">Save Force Proxy</button>

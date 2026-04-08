@@ -396,7 +396,7 @@ func main() {
 							return fmt.Errorf("write 200: %w", err)
 						}
 						// Now tunnel is established: client <-> proxyConn. Let SizeForwarder handle it.
-						res, sfErr := sizeForwarder.Forward(ctx, buffConn.Conn, proxyConn, reqInfo, nil)
+						res, sfErr := sizeForwarder.Forward(ctx, buffConn.Conn, proxyConn, reqInfo, nil, outputPort)
 						if sfErr != nil {
 							return sfErr
 						}
@@ -413,7 +413,7 @@ func main() {
 						return err
 					}
 				}
-				res, sfErr := sizeForwarder.Forward(ctx, prefixConn, proxyConn, reqInfo, reqInfo.ConsumedBytes)
+				res, sfErr := sizeForwarder.Forward(ctx, prefixConn, proxyConn, reqInfo, reqInfo.ConsumedBytes, outputPort)
 				if sfErr != nil {
 					return sfErr
 				}
