@@ -27,30 +27,28 @@ func probeHTTP(proxy *config.ProxyEntry, testURL string, timeout time.Duration) 
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(timeout))
 
-	// CONNECT for HTTPS test targets, else direct GET.
+	// Use plain HTTP GET through the proxy (most reliable method).
 	host := "httpbin.org"
-	port := "80"
 	path := "/ip"
 	if testURL != "" {
-		h, p, pa := parseTestURL(testURL)
+		h, _, pa := parseTestURL(testURL)
 		if h != "" {
 			host = h
-			port = p
 			path = pa
 		}
 	}
 
-	// Send CONNECT.
+	// Plain HTTP GET via proxy (no CONNECT needed).
 	var b strings.Builder
-	b.WriteString("CONNECT " + host + ":" + port + " HTTP/1.1\r\n")
-	b.WriteString("Host: " + host + ":" + port + "\r\n")
+	b.WriteString("GET http://" + host + path + " HTTP/1.1\r\n")
+	b.WriteString("Host: " + host + "\r\n")
 	if proxy.User != "" {
 		auth := base64.StdEncoding.EncodeToString([]byte(proxy.User + ":" + proxy.Pass))
 		b.WriteString("Proxy-Authorization: Basic " + auth + "\r\n")
 	}
-	b.WriteString("\r\n")
+	b.WriteString("Connection: close\r\n\r\n")
 	if _, err := conn.Write([]byte(b.String())); err != nil {
-		res.Error = "write connect: " + err.Error()
+		res.Error = "write: " + err.Error()
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
@@ -58,27 +56,12 @@ func probeHTTP(proxy *config.ProxyEntry, testURL string, timeout time.Duration) 
 	rdr := bufio.NewReader(conn)
 	statusLine, err := rdr.ReadString('\n')
 	if err != nil {
-		res.Error = "read connect: " + err.Error()
+		res.Error = "read status: " + err.Error()
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
 	if !strings.Contains(statusLine, "200") {
-		res.Error = "connect failed: " + strings.TrimSpace(statusLine)
-		res.LatencyMs = time.Since(start).Milliseconds()
-		return res
-	}
-	// Drain remaining headers.
-	for {
-		line, err := rdr.ReadString('\n')
-		if err != nil || line == "\r\n" || line == "\n" {
-			break
-		}
-	}
-
-	// Send GET.
-	req := "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n"
-	if _, err := conn.Write([]byte(req)); err != nil {
-		res.Error = "write get: " + err.Error()
+		res.Error = "http failed: " + strings.TrimSpace(statusLine)
 		res.LatencyMs = time.Since(start).Milliseconds()
 		return res
 	}
@@ -91,7 +74,7 @@ func probeHTTP(proxy *config.ProxyEntry, testURL string, timeout time.Duration) 
 	}
 	res.LatencyMs = time.Since(start).Milliseconds()
 
-	// Parse body: find JSON.
+	// Parse body: find JSON with "origin" field.
 	raw := string(body)
 	if idx := strings.Index(raw, "{"); idx >= 0 {
 		var obj map[string]interface{}
