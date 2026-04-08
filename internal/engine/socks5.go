@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	socks5 "github.com/armon/go-socks5"
 
@@ -20,8 +21,9 @@ import (
 type Socks5Result struct {
 	DestHost     string
 	DestPort     string
-	BytesRecv    int64 // bytes received from upstream (download)
-	BytesSent    int64 // bytes sent to upstream (upload)
+	BytesRecv    int64  // bytes received from upstream (download)
+	BytesSent    int64  // bytes sent to upstream (upload)
+	ProxyUsed    string // set if a retry switched to a different proxy
 }
 
 // countingConn wraps a net.Conn to track bytes read and written.
@@ -76,13 +78,18 @@ func NewSocks5Handler(logger *slog.Logger) *Socks5Handler {
 }
 
 // HandleConnection serves a SOCKS5 session on clientConn, tunneling all
-// outbound connections through the provided upstream proxy.
+// outbound connections through the provided upstream proxy. If the dial
+// fails and a rotator is provided, it retries with up to maxRetries
+// different proxies.
 // It returns destination info and byte counts captured during the session.
-func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry) (*Socks5Result, error) {
+func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry, rotator Rotator, clientIP string) (*Socks5Result, error) {
+	const maxRetries = 3
 	var result Socks5Result
 	var portOnce sync.Once
 	var domainOnce sync.Once
 	var counter *countingConn
+
+	currentProxy := proxy
 
 	// Resolver captures the FQDN before go-socks5 resolves it to IP.
 	resolver := &domainResolver{host: &result.DestHost, once: &domainOnce}
@@ -99,15 +106,34 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 			}
 		})
 
-		var conn net.Conn
-		var err error
-		switch proxy.Type {
-		case "socks5":
-			conn, err = dialThroughSOCKS5Proxy(dialCtx, proxy, addr)
-		case "http":
-			conn, err = dialThroughHTTPProxy(dialCtx, proxy, addr)
-		default:
-			return nil, fmt.Errorf("unsupported proxy type: %s", proxy.Type)
+		// Try current proxy, then retry with different proxies on failure.
+		tryProxy := func(p config.ProxyEntry) (net.Conn, error) {
+			switch p.Type {
+			case "socks5":
+				return dialThroughSOCKS5Proxy(dialCtx, p, addr)
+			case "http":
+				return dialThroughHTTPProxy(dialCtx, p, addr)
+			default:
+				return nil, fmt.Errorf("unsupported proxy type: %s", p.Type)
+			}
+		}
+
+		conn, err := tryProxy(currentProxy)
+		if err != nil && rotator != nil {
+			h.logger.Debug("proxy dial failed, retrying", "proxy", fmt.Sprintf("%s:%d", currentProxy.Host, currentProxy.Port), "error", err)
+			for i := 0; i < maxRetries; i++ {
+				next, nErr := rotator.Next(clientIP)
+				if nErr != nil {
+					break
+				}
+				conn, err = tryProxy(*next)
+				if err == nil {
+					currentProxy = *next
+					result.ProxyUsed = fmt.Sprintf("%s:%d", next.Host, next.Port)
+					break
+				}
+				h.logger.Debug("retry proxy also failed", "proxy", fmt.Sprintf("%s:%d", next.Host, next.Port), "attempt", i+1, "error", err)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -142,14 +168,20 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 	return &result, nil
 }
 
+// proxyDialTimeout is the max time to wait when connecting to an upstream proxy.
+const proxyDialTimeout = 15 * time.Second
+
 // dialThroughHTTPProxy opens a CONNECT tunnel to targetAddr through an
 // HTTP proxy.
 func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAddr string) (net.Conn, error) {
-	d := net.Dialer{}
+	d := net.Dialer{Timeout: proxyDialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port)))
 	if err != nil {
 		return nil, fmt.Errorf("dial http proxy: %w", err)
 	}
+	// Deadline for the CONNECT handshake.
+	conn.SetDeadline(time.Now().Add(proxyDialTimeout))
+	defer conn.SetDeadline(time.Time{})
 
 	req := "CONNECT " + targetAddr + " HTTP/1.1\r\nHost: " + targetAddr + "\r\n"
 	if proxy.User != "" {
@@ -179,11 +211,14 @@ func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAd
 // dialThroughSOCKS5Proxy performs a SOCKS5 handshake with proxy and
 // returns a connection tunneled to targetAddr.
 func dialThroughSOCKS5Proxy(ctx context.Context, proxy config.ProxyEntry, targetAddr string) (net.Conn, error) {
-	d := net.Dialer{}
+	d := net.Dialer{Timeout: proxyDialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port)))
 	if err != nil {
 		return nil, fmt.Errorf("dial socks5 proxy: %w", err)
 	}
+	// Deadline for the SOCKS5 handshake.
+	conn.SetDeadline(time.Now().Add(proxyDialTimeout))
+	defer conn.SetDeadline(time.Time{})
 
 	// Greeting.
 	var greet []byte

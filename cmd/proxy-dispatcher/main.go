@@ -263,7 +263,7 @@ func main() {
 				return
 			}
 			proxyAddr := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
-			sResult, sErr := socks5H.HandleConnection(ctx, buffConn, *proxy)
+			sResult, sErr := socks5H.HandleConnection(ctx, buffConn, *proxy, group.Rotator, clientIP)
 			lat := time.Since(startTime).Milliseconds()
 			destHost := ""
 			destPort := ""
@@ -273,6 +273,9 @@ func main() {
 				destPort = sResult.DestPort
 				bytesSent = sResult.BytesSent
 				bytesRecv = sResult.BytesRecv
+				if sResult.ProxyUsed != "" {
+					proxyAddr = sResult.ProxyUsed
+				}
 			}
 
 			// Feed bytes into bandwidth tracker and auto-bypass.
