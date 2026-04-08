@@ -544,8 +544,16 @@ function wsConnect() {
       const tbody = document.getElementById('liveTrafficBody');
       const tr = document.createElement('tr');
       const ts = new Date(e.timestamp).toLocaleTimeString();
-      tr.innerHTML = '<td>' + ts + '</td><td>' + (e.client_ip||'') + '</td><td>' + (e.domain||'') + '</td><td>' + (e.method||'') +
-        '</td><td>' + (e.status_code||'') + '</td><td>' + (e.route_type||'') + '</td><td>' + (e.latency_ms||0) + 'ms</td><td>' +
+      const route = (e.route_type||'').toLowerCase();
+      const rowColor = route === 'direct' ? '#4ade80' : route === 'proxy' ? '#f59e0b' : '#e2e8f0';
+      tr.style.color = rowColor;
+      const routeBadge = route === 'direct'
+        ? '<span style="background:#166534;color:#4ade80;padding:2px 6px;border-radius:4px;font-weight:600">DIRECT</span>'
+        : route === 'proxy'
+        ? '<span style="background:#92400e;color:#fbbf24;padding:2px 6px;border-radius:4px;font-weight:600">PROXY</span>'
+        : '<span style="background:#334155;color:#e2e8f0;padding:2px 6px;border-radius:4px">' + (e.route_type||'') + '</span>';
+      tr.innerHTML = '<td>' + ts + '</td><td>' + (e.port||'') + '</td><td>' + (e.client_ip||'') + '</td><td>' + (e.domain||'') + '</td><td>' + (e.method||'') +
+        '</td><td>' + (e.status_code||'') + '</td><td>' + routeBadge + '</td><td>' + (e.latency_ms||0) + 'ms</td><td>' +
         formatBytes((e.bytes_sent||0)+(e.bytes_recv||0)) + '</td><td style="color:#f87171">' + (e.error||'') + '</td>';
       tbody.insertBefore(tr, tbody.firstChild);
       while (tbody.children.length > 200) tbody.removeChild(tbody.lastChild);
@@ -560,6 +568,7 @@ function wsSend(obj) {
 document.getElementById('wsConnectBtn').addEventListener('click', wsConnect);
 document.getElementById('wsPauseBtn').addEventListener('click', () => wsSend({action:'pause'}));
 document.getElementById('wsResumeBtn').addEventListener('click', () => wsSend({action:'resume'}));
+document.getElementById('wsClearBtn').addEventListener('click', () => { document.getElementById('liveTrafficBody').innerHTML = ''; });
 document.getElementById('wsFilterBtn').addEventListener('click', () => wsSend({action:'filter', filter: document.getElementById('wsFilter').value}));
 
 // Ring buffer stats

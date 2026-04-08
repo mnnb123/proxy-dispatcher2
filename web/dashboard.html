@@ -412,13 +412,14 @@
           <button class="btn btn-sm" id="wsConnectBtn">Connect</button>
           <button class="btn btn-sm" id="wsPauseBtn">Pause</button>
           <button class="btn btn-sm" id="wsResumeBtn">Resume</button>
+          <button class="btn btn-sm" id="wsClearBtn" style="background:#ef4444">Clear</button>
           <input type="text" id="wsFilter" placeholder="Filter domain..." style="width:180px;margin-left:8px">
           <button class="btn btn-sm" id="wsFilterBtn">Apply Filter</button>
         </div>
         <div id="liveTrafficTable" style="max-height:400px;overflow-y:auto;font-size:12px">
           <table class="data-table">
             <thead><tr>
-              <th>Time</th><th>Client</th><th>Domain</th><th>Method</th>
+              <th>Time</th><th>Port</th><th>Client</th><th>Domain</th><th>Method</th>
               <th>Status</th><th>Route</th><th>Latency</th><th>Bytes</th><th>Error</th>
             </tr></thead>
             <tbody id="liveTrafficBody"></tbody>
