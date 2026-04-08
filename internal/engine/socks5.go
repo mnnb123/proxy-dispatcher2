@@ -8,11 +8,18 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 
 	socks5 "github.com/armon/go-socks5"
 
 	"proxy-dispatcher/internal/config"
 )
+
+// Socks5Result holds destination info extracted during a SOCKS5 session.
+type Socks5Result struct {
+	DestHost string
+	DestPort string
+}
 
 // Socks5Handler handles incoming SOCKS5 client connections by tunneling
 // them through an upstream proxy.
@@ -27,8 +34,23 @@ func NewSocks5Handler(logger *slog.Logger) *Socks5Handler {
 
 // HandleConnection serves a SOCKS5 session on clientConn, tunneling all
 // outbound connections through the provided upstream proxy.
-func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry) error {
+// It returns destination info captured from the SOCKS5 request.
+func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry) (*Socks5Result, error) {
+	var result Socks5Result
+	var once sync.Once
+
 	dialer := func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+		// Capture destination from the first dial call.
+		once.Do(func() {
+			host, port, err := net.SplitHostPort(addr)
+			if err == nil {
+				result.DestHost = host
+				result.DestPort = port
+			} else {
+				result.DestHost = addr
+			}
+		})
+
 		switch proxy.Type {
 		case "socks5":
 			return dialThroughSOCKS5Proxy(dialCtx, proxy, addr)
@@ -40,18 +62,18 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 	}
 
 	conf := &socks5.Config{
-		Dial: dialer,
+		Dial:   dialer,
 		Logger: nil,
 	}
 	server, err := socks5.New(conf)
 	if err != nil {
-		return fmt.Errorf("create socks5 server: %w", err)
+		return &result, fmt.Errorf("create socks5 server: %w", err)
 	}
 
 	if err := server.ServeConn(clientConn); err != nil {
-		return fmt.Errorf("serve socks5: %w", err)
+		return &result, fmt.Errorf("serve socks5: %w", err)
 	}
-	return nil
+	return &result, nil
 }
 
 // dialThroughHTTPProxy opens a CONNECT tunnel to targetAddr through an
