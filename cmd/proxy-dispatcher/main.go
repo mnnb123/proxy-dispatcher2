@@ -291,9 +291,21 @@ func main() {
 				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 				return
 			}
-			pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
-			tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-			recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+			if reqInfo.IsHTTPS {
+				// CONNECT tunnel: send 200 to client, pipe raw bytes (no CONNECT headers to remote).
+				if _, werr := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); werr != nil {
+					remoteConn.Close()
+					return
+				}
+				pr := engine.Pipe(ctx, buffConn.Conn, remoteConn, idleTimeout)
+				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
+				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+			} else {
+				// Plain HTTP: replay consumed request bytes then pipe.
+				pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
+				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
+				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+			}
 			return
 
 		case "resource":
@@ -305,9 +317,19 @@ func main() {
 					recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 					return
 				}
-				pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
-				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+				if reqInfo.IsHTTPS {
+					if _, werr := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); werr != nil {
+						remoteConn.Close()
+						return
+					}
+					pr := engine.Pipe(ctx, buffConn.Conn, remoteConn, idleTimeout)
+					tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
+					recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+				} else {
+					pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
+					tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
+					recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+				}
 			} else {
 				remoteConn, err := directDialer.DialThroughResource(ctx, reqInfo.Target, *resProxy)
 				if err != nil {
