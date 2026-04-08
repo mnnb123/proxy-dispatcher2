@@ -259,10 +259,12 @@ func main() {
 			proxy, err := group.Rotator.Next(clientIP)
 			if err != nil {
 				logger.Warn("no proxy available", "group", group.Name)
+				recordEntry(outputPort, clientIP, "", "", "", "", "socks5", "proxy", "", "no proxy available", 502, 0, 0, 0)
 				return
 			}
 			if err := socks5H.HandleConnection(ctx, buffConn, *proxy); err != nil {
 				logger.Debug("socks5 session ended", "error", err)
+				recordEntry(outputPort, clientIP, "", "", "", "", "socks5", "proxy", fmt.Sprintf("%s:%d", proxy.Host, proxy.Port), err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 			}
 			return
 		}
@@ -273,6 +275,7 @@ func main() {
 			proxy, err := group.Rotator.Next(clientIP)
 			if err != nil {
 				logger.Warn("no proxy available", "group", group.Name)
+				recordEntry(outputPort, clientIP, "unknown", "", "", "", "http", "proxy", "", "no proxy available", 502, 0, 0, 0)
 				return
 			}
 			pr, err := httpH.HandleConnection(ctx, buffConn, *proxy)
