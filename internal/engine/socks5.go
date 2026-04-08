@@ -50,6 +50,7 @@ func (c *countingConn) Write(p []byte) (int, error) {
 }
 
 // domainResolver captures the FQDN before the go-socks5 library resolves it.
+// It returns a dummy IP so DNS resolution happens on the upstream proxy, not locally.
 type domainResolver struct {
 	host *string
 	once *sync.Once
@@ -59,11 +60,8 @@ func (d *domainResolver) Resolve(ctx context.Context, name string) (context.Cont
 	d.once.Do(func() {
 		*d.host = name
 	})
-	addr, err := net.ResolveIPAddr("ip", name)
-	if err != nil {
-		return ctx, nil, err
-	}
-	return ctx, addr.IP, nil
+	// Return dummy IP — the dialer will reconstruct domain:port for upstream.
+	return ctx, net.IPv4(0, 0, 0, 1), nil
 }
 
 // Socks5Handler handles incoming SOCKS5 client connections by tunneling
@@ -95,24 +93,30 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 	resolver := &domainResolver{host: &result.DestHost, once: &domainOnce}
 
 	dialer := func(dialCtx context.Context, network, addr string) (net.Conn, error) {
-		// Capture port (and host as fallback if resolver wasn't called, e.g. client sent IP).
+		// Capture port. addr may be "0.0.0.1:port" (dummy IP from resolver) or "real_ip:port" (client sent IP).
+		_, port, _ := net.SplitHostPort(addr)
 		portOnce.Do(func() {
-			host, port, err := net.SplitHostPort(addr)
-			if err == nil {
-				result.DestPort = port
-				if result.DestHost == "" {
-					result.DestHost = host
-				}
+			result.DestPort = port
+			if result.DestHost == "" {
+				// Client sent a raw IP (resolver was not called).
+				result.DestHost, _, _ = net.SplitHostPort(addr)
 			}
 		})
+
+		// Reconstruct target using original domain (if captured by resolver)
+		// so upstream proxy handles DNS, not this server.
+		targetAddr := addr
+		if result.DestHost != "" && port != "" {
+			targetAddr = net.JoinHostPort(result.DestHost, port)
+		}
 
 		// Try current proxy, then retry with different proxies on failure.
 		tryProxy := func(p config.ProxyEntry) (net.Conn, error) {
 			switch p.Type {
 			case "socks5":
-				return dialThroughSOCKS5Proxy(dialCtx, p, addr)
+				return dialThroughSOCKS5Proxy(dialCtx, p, targetAddr)
 			case "http":
-				return dialThroughHTTPProxy(dialCtx, p, addr)
+				return dialThroughHTTPProxy(dialCtx, p, targetAddr)
 			default:
 				return nil, fmt.Errorf("unsupported proxy type: %s", p.Type)
 			}
