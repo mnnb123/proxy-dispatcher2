@@ -33,6 +33,9 @@ func (s *Server) handlePostAutoBypass(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.AutoBypass = req
+	if s.sizeForwarder != nil {
+		s.sizeForwarder.UpdateConfig(req)
+	}
 	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
 		respondError(w, http.StatusInternalServerError, "save failed")
 		return

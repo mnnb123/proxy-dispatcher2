@@ -179,6 +179,16 @@ func main() {
 		IdleTimeout:   idleTimeout,
 		Logger:        logger,
 	})
+	sizeForwarder.SetOnAutoBypass(func(domain string) {
+		cfg.BypassDomains = append(cfg.BypassDomains, config.DomainRule{
+			Pattern: domain,
+			Enabled: true,
+			Note:    "auto-bypass",
+		})
+		_ = ruleEngine.Reload(cfg)
+		_ = config.SaveConfig(*configPath, cfg)
+		logger.Info("auto-bypass: added domain to bypass rules", "domain", domain)
+	})
 
 	// Phase 5: health checker, retry, importer.
 	healthChecker := health.NewHealthChecker(cfg.HealthCheck, groupMgr.AllGroupProxies(), logger)

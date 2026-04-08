@@ -307,11 +307,14 @@
     <div class="grid">
       <section class="card">
         <h2>Auto Bypass (Size-based)</h2>
+        <p style="color:#8a8ab0;font-size:13px;margin-bottom:12px">
+          Khi domain không nằm trong Bypass Rules mà tổng lưu lượng vượt ngưỡng, hệ thống tự động thêm vào Bypass Rules &rarr; lần sau đi Direct.
+        </p>
         <div class="toggle-row">
           <label class="toggle-label">Enable Auto Bypass</label>
           <input type="checkbox" id="abpEnabled">
         </div>
-        <label>Size Threshold</label>
+        <label>Size Threshold (vượt mức này sẽ tự bypass)</label>
         <div class="row">
           <div class="col"><input type="number" id="abpThresholdVal" value="1"></div>
           <div class="col"><select id="abpThresholdUnit">
@@ -319,30 +322,17 @@
             <option value="1048576" selected>MB</option>
           </select></div>
         </div>
-        <label>Action when threshold exceeded</label>
-        <div class="radio-group">
-          <label><input type="radio" name="abpAction" value="direct" checked> Direct</label>
-          <label><input type="radio" name="abpAction" value="resource"> Resource Proxy</label>
-          <label><input type="radio" name="abpAction" value="throttle"> Throttle</label>
-          <label><input type="radio" name="abpAction" value="drop"> Drop</label>
-        </div>
-        <label>Strategy</label>
-        <div class="radio-group">
-          <label><input type="radio" name="abpStrategy" value="header" checked> Header</label>
-          <label><input type="radio" name="abpStrategy" value="stream"> Stream</label>
-          <label><input type="radio" name="abpStrategy" value="predict"> Predict</label>
-        </div>
-        <button class="btn btn-primary" id="saveAbpBtn">Save Auto Bypass</button>
+        <button class="btn btn-primary" id="saveAbpBtn" style="margin-top:12px">Save Auto Bypass</button>
         <div id="abpMsg" class="msg"></div>
 
-        <h3 style="margin-top:20px;color:#a78bfa">Auto Bypass Activity</h3>
+        <h3 style="margin-top:24px;color:#4ade80">Auto Bypass Activity</h3>
         <div class="stat-cards" style="margin-bottom:10px">
-          <div class="stat-card"><div class="stat-val" id="abpTotal">0</div><div class="stat-lbl">Total Bypassed</div></div>
+          <div class="stat-card"><div class="stat-val" id="abpTotal" style="color:#4ade80">0</div><div class="stat-lbl">Domains Auto-Bypassed</div></div>
         </div>
-        <div id="abpEventsTable" style="max-height:250px;overflow-y:auto;font-size:12px">
+        <div id="abpEventsTable" style="max-height:300px;overflow-y:auto;font-size:12px">
           <table class="data-table">
             <thead><tr>
-              <th>Time</th><th>Domain</th><th>Reason</th><th>Avg Size</th><th>Threshold</th>
+              <th>Time</th><th>Domain</th><th>Traffic Size</th><th>Threshold</th><th>Status</th>
             </tr></thead>
             <tbody id="abpEventsBody"></tbody>
           </table>

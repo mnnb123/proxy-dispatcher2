@@ -1,14 +1,10 @@
 package engine
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -39,37 +35,86 @@ type SizeForwardResult struct {
 type BypassEvent struct {
 	Time      int64  `json:"time"`
 	Domain    string `json:"domain"`
-	Reason    string `json:"reason"`
-	AvgSize   int64  `json:"avg_size"`
+	Size      int64  `json:"size"`
 	Threshold int64  `json:"threshold"`
 }
 
-// SizeForwarder inspects response size and optionally switches to direct.
+// OnAutoBypassFunc is called when a domain should be added to bypass rules.
+type OnAutoBypassFunc func(domain string)
+
+// SizeForwarder inspects response size and optionally adds domains to bypass.
 type SizeForwarder struct {
-	deps   SizeForwarderDeps
-	mu     sync.Mutex
-	events []BypassEvent
-	total  int64
+	deps          SizeForwarderDeps
+	onAutoBypass  OnAutoBypassFunc
+	mu            sync.Mutex
+	events        []BypassEvent
+	total         int64
+	autoAdded     map[string]bool // track already-added domains to avoid duplicates
 }
 
 // NewSizeForwarder creates a SizeForwarder.
 func NewSizeForwarder(deps SizeForwarderDeps) *SizeForwarder {
-	return &SizeForwarder{deps: deps}
+	return &SizeForwarder{
+		deps:      deps,
+		autoAdded: make(map[string]bool),
+	}
 }
 
-func (sf *SizeForwarder) recordEvent(domain, reason string, avgSize, threshold int64) {
+// SetOnAutoBypass sets the callback for when a domain exceeds threshold.
+func (sf *SizeForwarder) SetOnAutoBypass(fn OnAutoBypassFunc) {
+	sf.onAutoBypass = fn
+}
+
+// UpdateConfig updates the auto-bypass config at runtime.
+func (sf *SizeForwarder) UpdateConfig(cfg config.AutoBypassConfig) {
+	sf.deps.AutoBypassCfg = cfg
+}
+
+func (sf *SizeForwarder) recordEvent(domain string, size, threshold int64) {
 	sf.mu.Lock()
 	defer sf.mu.Unlock()
 	sf.total++
 	sf.events = append(sf.events, BypassEvent{
 		Time:      time.Now().UnixMilli(),
 		Domain:    domain,
-		Reason:    reason,
-		AvgSize:   avgSize,
+		Size:      size,
 		Threshold: threshold,
 	})
 	if len(sf.events) > 100 {
 		sf.events = sf.events[len(sf.events)-100:]
+	}
+}
+
+// checkAndAutoAdd checks if domain bytes exceed threshold and adds to bypass.
+func (sf *SizeForwarder) checkAndAutoAdd(domain string, totalBytes int64) {
+	cfg := sf.deps.AutoBypassCfg
+	if !cfg.Enabled || totalBytes <= cfg.SizeThreshold {
+		return
+	}
+	// Already in bypass rules?
+	action := sf.deps.RuleEngine.Evaluate(domain, "")
+	if action.Type == "direct" || action.Type == "resource" {
+		return
+	}
+	// Force proxy domains should not be auto-bypassed.
+	if sf.deps.RuleEngine.IsForceProxy(domain) {
+		return
+	}
+	// Already auto-added this session?
+	sf.mu.Lock()
+	if sf.autoAdded[domain] {
+		sf.mu.Unlock()
+		return
+	}
+	sf.autoAdded[domain] = true
+	sf.mu.Unlock()
+
+	sf.deps.Logger.Info("auto-bypass: domain exceeded threshold, adding to bypass rules",
+		"domain", domain, "bytes", totalBytes, "threshold", cfg.SizeThreshold)
+	sf.recordEvent(domain, totalBytes, cfg.SizeThreshold)
+
+	if sf.onAutoBypass != nil {
+		sf.onAutoBypass(domain)
 	}
 }
 
@@ -82,8 +127,20 @@ func (sf *SizeForwarder) BypassStats() ([]BypassEvent, int64) {
 	return out, sf.total
 }
 
-// Forward sends a request through proxyConn, optionally switching to
-// direct if the response exceeds the configured size threshold.
+// AutoAddedDomains returns the list of domains auto-added this session.
+func (sf *SizeForwarder) AutoAddedDomains() []string {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	out := make([]string, 0, len(sf.autoAdded))
+	for d := range sf.autoAdded {
+		out = append(out, d)
+	}
+	return out
+}
+
+// Forward sends a request through proxyConn. After the pipe completes,
+// checks if the domain's total bytes exceed the threshold and auto-adds
+// it to bypass rules if so.
 func (sf *SizeForwarder) Forward(ctx context.Context, client net.Conn, proxyConn net.Conn, reqInfo *RequestInfo, consumedReqBytes []byte) (SizeForwardResult, error) {
 	domain := reqInfo.Host
 	cfg := sf.deps.AutoBypassCfg
@@ -98,131 +155,31 @@ func (sf *SizeForwarder) Forward(ctx context.Context, client net.Conn, proxyConn
 		case "drop":
 			client.Close()
 			return SizeForwardResult{}, fmt.Errorf("budget exceeded, dropped")
-		default: // "throttle" or unknown
+		default:
 			pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
 			sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
 			return SizeForwardResult{PipeResult: pr}, nil
 		}
 	}
 
-	// Force proxy — skip size check.
+	// Force proxy — skip auto-bypass check.
 	if sf.deps.RuleEngine.IsForceProxy(domain) {
 		pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
 		sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
 		return SizeForwardResult{PipeResult: pr}, nil
 	}
 
-	if !cfg.Enabled {
-		pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
-		sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
-		return SizeForwardResult{PipeResult: pr}, nil
+	// Pipe through proxy, then check size after completion.
+	pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
+	totalBytes := pr.BytesSent + pr.BytesReceived
+	sf.deps.Tracker.Record(domain, totalBytes, "proxy")
+
+	// Auto-bypass check: if enabled and bytes exceed threshold, add to bypass.
+	if cfg.Enabled {
+		sf.checkAndAutoAdd(domain, totalBytes)
 	}
 
-	// CONNECT tunnels: predict check first, then stream-monitor the pipe.
-	if reqInfo.IsHTTPS {
-		// Predict: if average size exceeds threshold, switch to direct immediately.
-		avg := sf.deps.Tracker.GetDomainAvgSize(domain)
-		if avg > cfg.SizeThreshold {
-			sf.deps.Logger.Info("auto-bypass predict: switching HTTPS to direct", "domain", domain, "avg_size", avg, "threshold", cfg.SizeThreshold)
-			sf.recordEvent(domain, "predict (HTTPS)", avg, cfg.SizeThreshold)
-			proxyConn.Close()
-			res, err := sf.retryDirect(ctx, client, reqInfo, consumedReqBytes)
-			res.RouteChanged = true
-			return res, err
-		}
-		// Stream-monitor: pipe through proxy but track bytes for future predict.
-		pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
-		sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
-		return SizeForwardResult{PipeResult: pr}, nil
-	}
-
-	switch cfg.Strategy {
-	case "header":
-		return sf.headerStrategy(ctx, client, proxyConn, reqInfo, consumedReqBytes, domain)
-	case "stream":
-		return sf.streamStrategy(ctx, client, proxyConn, domain)
-	case "predict":
-		return sf.predictStrategy(ctx, client, proxyConn, reqInfo, consumedReqBytes, domain)
-	default:
-		pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
-		sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
-		return SizeForwardResult{PipeResult: pr}, nil
-	}
-}
-
-func (sf *SizeForwarder) headerStrategy(ctx context.Context, client, proxyConn net.Conn, reqInfo *RequestInfo, consumed []byte, domain string) (SizeForwardResult, error) {
-	cfg := sf.deps.AutoBypassCfg
-	reader := bufio.NewReaderSize(proxyConn, 4096)
-
-	// Read response status line + headers without consuming body.
-	var headerBuf []byte
-	contentLength := int64(-1)
-	for {
-		line, err := reader.ReadBytes('\n')
-		headerBuf = append(headerBuf, line...)
-		if err != nil {
-			// Failed to read headers — just pipe what we have.
-			break
-		}
-		lineStr := strings.TrimSpace(string(line))
-		if lineStr == "" {
-			break
-		}
-		if strings.HasPrefix(strings.ToLower(lineStr), "content-length:") {
-			val := strings.TrimSpace(lineStr[len("content-length:"):])
-			if n, err := strconv.ParseInt(val, 10, 64); err == nil {
-				contentLength = n
-			}
-		}
-	}
-
-	if contentLength > cfg.SizeThreshold {
-		sf.deps.Logger.Info("header strategy: large response, switching to direct", "domain", domain, "content_length", contentLength)
-		sf.recordEvent(domain, "header (Content-Length: "+strconv.FormatInt(contentLength, 10)+")", contentLength, cfg.SizeThreshold)
-		proxyConn.Close()
-		res, err := sf.retryDirect(ctx, client, reqInfo, consumed)
-		res.RouteChanged = true
-		return res, err
-	}
-
-	// Forward the already-read headers to client, then pipe the rest.
-	if _, err := client.Write(headerBuf); err != nil {
-		proxyConn.Close()
-		return SizeForwardResult{}, err
-	}
-
-	// Pipe remaining body: reader (has buffered data) → client, client → proxyConn.
-	pr := Pipe(ctx, client, newReaderConn(reader, proxyConn), sf.deps.IdleTimeout)
-	total := int64(len(headerBuf)) + pr.BytesSent + pr.BytesReceived
-	sf.deps.Tracker.Record(domain, total, "proxy")
 	return SizeForwardResult{PipeResult: pr}, nil
-}
-
-func (sf *SizeForwarder) streamStrategy(ctx context.Context, client, proxyConn net.Conn, domain string) (SizeForwardResult, error) {
-	cfg := sf.deps.AutoBypassCfg
-	counter := NewStreamCounter(proxyConn, cfg.SizeThreshold, func(n int64) {
-		sf.deps.Logger.Info("stream strategy: threshold exceeded", "domain", domain, "bytes", n)
-	})
-	wrapped := &countConn{Conn: proxyConn, reader: counter}
-	pr := Pipe(ctx, client, wrapped, sf.deps.IdleTimeout)
-	sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
-	return SizeForwardResult{PipeResult: pr}, nil
-}
-
-func (sf *SizeForwarder) predictStrategy(ctx context.Context, client, proxyConn net.Conn, reqInfo *RequestInfo, consumed []byte, domain string) (SizeForwardResult, error) {
-	cfg := sf.deps.AutoBypassCfg
-	if cfg.PredictEnabled {
-		avg := sf.deps.Tracker.GetDomainAvgSize(domain)
-		if avg > int64(float64(cfg.SizeThreshold)*0.8) {
-			sf.deps.Logger.Info("predict strategy: bypassing", "domain", domain, "avg_size", avg)
-			sf.recordEvent(domain, "predict (HTTP)", avg, cfg.SizeThreshold)
-			proxyConn.Close()
-			res, err := sf.retryDirect(ctx, client, reqInfo, consumed)
-			res.RouteChanged = true
-			return res, err
-		}
-	}
-	return sf.headerStrategy(ctx, client, proxyConn, reqInfo, consumed, domain)
 }
 
 func (sf *SizeForwarder) retryDirect(ctx context.Context, client net.Conn, reqInfo *RequestInfo, consumedReqBytes []byte) (SizeForwardResult, error) {
@@ -230,7 +187,6 @@ func (sf *SizeForwarder) retryDirect(ctx context.Context, client net.Conn, reqIn
 	if err != nil {
 		return SizeForwardResult{}, fmt.Errorf("direct retry dial: %w", err)
 	}
-	// Send the original request bytes that the client already sent.
 	if len(consumedReqBytes) > 0 {
 		if _, err := remoteConn.Write(consumedReqBytes); err != nil {
 			remoteConn.Close()
@@ -241,24 +197,3 @@ func (sf *SizeForwarder) retryDirect(ctx context.Context, client net.Conn, reqIn
 	sf.deps.Tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
 	return SizeForwardResult{PipeResult: pr, RouteChanged: true}, nil
 }
-
-// countConn wraps a net.Conn replacing Read with a StreamCounter.
-type countConn struct {
-	net.Conn
-	reader io.Reader
-}
-
-func (c *countConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
-
-// readerConn wraps a buffered reader over a net.Conn so the buffered
-// bytes are consumed first.
-type readerConn struct {
-	reader io.Reader
-	net.Conn
-}
-
-func newReaderConn(r *bufio.Reader, conn net.Conn) *readerConn {
-	return &readerConn{reader: r, Conn: conn}
-}
-
-func (rc *readerConn) Read(p []byte) (int, error) { return rc.reader.Read(p) }

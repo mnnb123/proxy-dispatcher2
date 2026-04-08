@@ -379,8 +379,6 @@ async function loadAutoBypass() {
     document.getElementById('abpThresholdVal').value = th / 1024;
     document.getElementById('abpThresholdUnit').value = '1024';
   }
-  document.querySelectorAll('input[name="abpAction"]').forEach(el => { el.checked = el.value === (r.data.action || 'direct'); });
-  document.querySelectorAll('input[name="abpStrategy"]').forEach(el => { el.checked = el.value === (r.data.strategy || 'header'); });
 }
 
 document.getElementById('saveAbpBtn').addEventListener('click', async () => {
@@ -389,9 +387,8 @@ document.getElementById('saveAbpBtn').addEventListener('click', async () => {
   const body = {
     enabled: document.getElementById('abpEnabled').checked,
     size_threshold: Math.round(val * unit),
-    action: document.querySelector('input[name="abpAction"]:checked').value,
-    strategy: document.querySelector('input[name="abpStrategy"]:checked').value,
-    throttle_speed_bps: 102400,
+    action: 'direct',
+    strategy: 'stream',
     predict_enabled: true,
   };
   const r = await apiCall('POST', '/api/config/auto-bypass', body);
@@ -401,7 +398,7 @@ document.getElementById('saveAbpBtn').addEventListener('click', async () => {
 
 // ── Auto Bypass Stats ──────────────────────────────────────
 async function refreshAbpStats() {
-  const r = await apiCall('GET', '/auto-bypass/stats');
+  const r = await apiCall('GET', '/api/auto-bypass/stats');
   if (!r.ok) return;
   document.getElementById('abpTotal').textContent = r.data.total || 0;
   const tbody = document.getElementById('abpEventsBody');
@@ -411,8 +408,9 @@ async function refreshAbpStats() {
     const tr = document.createElement('tr');
     tr.style.color = '#4ade80';
     const ts = new Date(ev.time).toLocaleTimeString();
-    tr.innerHTML = '<td>' + ts + '</td><td>' + ev.domain + '</td><td>' + ev.reason +
-      '</td><td>' + formatBytes(ev.avg_size) + '</td><td>' + formatBytes(ev.threshold) + '</td>';
+    tr.innerHTML = '<td>' + ts + '</td><td style="font-weight:600">' + ev.domain +
+      '</td><td>' + formatBytes(ev.size) + '</td><td>' + formatBytes(ev.threshold) +
+      '</td><td><span style="background:#166534;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:600">ADDED TO BYPASS</span></td>';
     tbody.appendChild(tr);
   });
 }
