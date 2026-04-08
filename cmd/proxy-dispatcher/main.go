@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -179,7 +180,10 @@ func main() {
 		IdleTimeout:   idleTimeout,
 		Logger:        logger,
 	})
+	var cfgMu sync.Mutex
 	sizeForwarder.SetOnAutoBypass(func(domain string) {
+		cfgMu.Lock()
+		defer cfgMu.Unlock()
 		cfg.BypassDomains = append(cfg.BypassDomains, config.DomainRule{
 			Pattern: domain,
 			Enabled: true,
@@ -424,9 +428,6 @@ func main() {
 				logger.Debug("proxy retry exhausted", "error", retryErr)
 				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, retryErr.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 				return
-			}
-			if !finalRes.RouteChanged {
-				tracker.Record(reqInfo.Host, finalRes.BytesSent+finalRes.BytesReceived, "proxy")
 			}
 			recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, "", 200, finalRes.BytesSent, finalRes.BytesReceived, time.Since(startTime).Milliseconds())
 		}

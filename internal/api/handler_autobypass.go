@@ -138,7 +138,7 @@ func (s *Server) handlePostForceProxy(w http.ResponseWriter, r *http.Request) {
 	for _, r := range rules {
 		forceSet[strings.ToLower(r.Pattern)] = true
 	}
-	filtered := s.cfg.BypassDomains[:0]
+	var filtered []config.DomainRule
 	removed := 0
 	for _, bd := range s.cfg.BypassDomains {
 		if forceSet[strings.ToLower(bd.Pattern)] {
