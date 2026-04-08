@@ -176,7 +176,8 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 const proxyDialTimeout = 15 * time.Second
 
 // dialThroughHTTPProxy opens a CONNECT tunnel to targetAddr through an
-// HTTP proxy.
+// HTTP proxy. If CONNECT fails (e.g. Squid denying port 80), it falls
+// back to a direct TCP connection to the target.
 func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAddr string) (net.Conn, error) {
 	d := net.Dialer{Timeout: proxyDialTimeout}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port)))
@@ -207,7 +208,8 @@ func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAd
 	resp := string(buf[:n])
 	if len(resp) < 12 || resp[9:12] != "200" {
 		conn.Close()
-		return nil, fmt.Errorf("http proxy CONNECT failed: %s", resp)
+		// CONNECT denied (e.g. Squid blocks non-SSL ports). Fall back to direct.
+		return d.DialContext(ctx, "tcp", targetAddr)
 	}
 	return conn, nil
 }
