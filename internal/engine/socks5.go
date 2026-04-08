@@ -9,16 +9,59 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	socks5 "github.com/armon/go-socks5"
 
 	"proxy-dispatcher/internal/config"
 )
 
-// Socks5Result holds destination info extracted during a SOCKS5 session.
+// Socks5Result holds destination info and byte counts from a SOCKS5 session.
 type Socks5Result struct {
-	DestHost string
-	DestPort string
+	DestHost     string
+	DestPort     string
+	BytesRecv    int64 // bytes received from upstream (download)
+	BytesSent    int64 // bytes sent to upstream (upload)
+}
+
+// countingConn wraps a net.Conn to track bytes read and written.
+type countingConn struct {
+	net.Conn
+	read    atomic.Int64
+	written atomic.Int64
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.read.Add(int64(n))
+	}
+	return n, err
+}
+
+func (c *countingConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.written.Add(int64(n))
+	}
+	return n, err
+}
+
+// domainResolver captures the FQDN before the go-socks5 library resolves it.
+type domainResolver struct {
+	host *string
+	once *sync.Once
+}
+
+func (d *domainResolver) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
+	d.once.Do(func() {
+		*d.host = name
+	})
+	addr, err := net.ResolveIPAddr("ip", name)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return ctx, addr.IP, nil
 }
 
 // Socks5Handler handles incoming SOCKS5 client connections by tunneling
@@ -34,44 +77,67 @@ func NewSocks5Handler(logger *slog.Logger) *Socks5Handler {
 
 // HandleConnection serves a SOCKS5 session on clientConn, tunneling all
 // outbound connections through the provided upstream proxy.
-// It returns destination info captured from the SOCKS5 request.
+// It returns destination info and byte counts captured during the session.
 func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry) (*Socks5Result, error) {
 	var result Socks5Result
-	var once sync.Once
+	var portOnce sync.Once
+	var domainOnce sync.Once
+	var counter *countingConn
+
+	// Resolver captures the FQDN before go-socks5 resolves it to IP.
+	resolver := &domainResolver{host: &result.DestHost, once: &domainOnce}
 
 	dialer := func(dialCtx context.Context, network, addr string) (net.Conn, error) {
-		// Capture destination from the first dial call.
-		once.Do(func() {
+		// Capture port (and host as fallback if resolver wasn't called, e.g. client sent IP).
+		portOnce.Do(func() {
 			host, port, err := net.SplitHostPort(addr)
 			if err == nil {
-				result.DestHost = host
 				result.DestPort = port
-			} else {
-				result.DestHost = addr
+				if result.DestHost == "" {
+					result.DestHost = host
+				}
 			}
 		})
 
+		var conn net.Conn
+		var err error
 		switch proxy.Type {
 		case "socks5":
-			return dialThroughSOCKS5Proxy(dialCtx, proxy, addr)
+			conn, err = dialThroughSOCKS5Proxy(dialCtx, proxy, addr)
 		case "http":
-			return dialThroughHTTPProxy(dialCtx, proxy, addr)
+			conn, err = dialThroughHTTPProxy(dialCtx, proxy, addr)
 		default:
 			return nil, fmt.Errorf("unsupported proxy type: %s", proxy.Type)
 		}
+		if err != nil {
+			return nil, err
+		}
+
+		// Wrap with byte counter so we can report traffic size.
+		counter = &countingConn{Conn: conn}
+		return counter, nil
 	}
 
 	conf := &socks5.Config{
-		Dial:   dialer,
-		Logger: nil,
+		Dial:     dialer,
+		Resolver: resolver,
+		Logger:   nil,
 	}
 	server, err := socks5.New(conf)
 	if err != nil {
 		return &result, fmt.Errorf("create socks5 server: %w", err)
 	}
 
-	if err := server.ServeConn(clientConn); err != nil {
-		return &result, fmt.Errorf("serve socks5: %w", err)
+	serveErr := server.ServeConn(clientConn)
+
+	// Collect byte counts after the session ends.
+	if counter != nil {
+		result.BytesRecv = counter.read.Load()
+		result.BytesSent = counter.written.Load()
+	}
+
+	if serveErr != nil {
+		return &result, fmt.Errorf("serve socks5: %w", serveErr)
 	}
 	return &result, nil
 }

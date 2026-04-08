@@ -267,21 +267,24 @@ func main() {
 			lat := time.Since(startTime).Milliseconds()
 			destHost := ""
 			destPort := ""
+			var bytesSent, bytesRecv int64
 			if sResult != nil {
 				destHost = sResult.DestHost
 				destPort = sResult.DestPort
+				bytesSent = sResult.BytesSent
+				bytesRecv = sResult.BytesRecv
 			}
 			if sErr != nil {
 				errStr := sErr.Error()
 				// broken pipe / connection reset = normal tunnel close, not an error.
 				if strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "use of closed") {
-					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, "", 200, 0, 0, lat)
+					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, "", 200, bytesSent, bytesRecv, lat)
 				} else {
 					logger.Debug("socks5 session error", "error", sErr)
-					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, errStr, 502, 0, 0, lat)
+					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, errStr, 502, bytesSent, bytesRecv, lat)
 				}
 			} else {
-				recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, "", 200, 0, 0, lat)
+				recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, "", 200, bytesSent, bytesRecv, lat)
 			}
 			return
 		}
