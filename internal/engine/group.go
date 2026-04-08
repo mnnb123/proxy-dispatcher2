@@ -51,12 +51,17 @@ func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, 
 		}
 	}
 	for _, m := range mappings {
-		if _, ok := gm.groups[m.GroupName]; !ok {
+		g, ok := gm.groups[m.GroupName]
+		if !ok {
 			logger.Warn("port mapping references unknown group, skipping", "group", m.GroupName)
 			continue
 		}
 		for p := m.PortStart; p <= m.PortEnd; p++ {
 			gm.portMap[p] = m.GroupName
+		}
+		// For fixed rotation, set the base port so index calculation works.
+		if fr, ok := g.Rotator.(*FixedRotator); ok {
+			fr.SetPortStart(m.PortStart)
 		}
 	}
 	return gm, nil
@@ -82,10 +87,20 @@ func (gm *GroupManager) GetGroupForPort(port int) (*ManagedGroup, error) {
 }
 
 // GetNextProxy picks the next proxy for a port/clientIP combination.
+// For "fixed" rotation mode, uses port-based index mapping.
 func (gm *GroupManager) GetNextProxy(port int, clientIP string) (*config.ProxyEntry, error) {
 	g, err := gm.GetGroupForPort(port)
 	if err != nil {
 		return nil, err
+	}
+	return g.NextProxy(port, clientIP)
+}
+
+// NextProxy selects a proxy using the group's rotator.
+// For fixed mode, maps port → proxy by index.
+func (g *ManagedGroup) NextProxy(port int, clientIP string) (*config.ProxyEntry, error) {
+	if fr, ok := g.Rotator.(*FixedRotator); ok {
+		return fr.NextForPort(port)
 	}
 	return g.Rotator.Next(clientIP)
 }

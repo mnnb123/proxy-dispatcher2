@@ -51,6 +51,8 @@ func NewRotator(mode string, proxies []*config.ProxyEntry, opts RotatorOpts) (Ro
 		wr := &WeightedRotator{proxies: proxies, rng: rand.New(rand.NewSource(time.Now().UnixNano())), logger: opts.Logger}
 		wr.RebuildWeights()
 		return wr, nil
+	case "fixed":
+		return &FixedRotator{proxies: proxies, logger: opts.Logger}, nil
 	}
 	return nil, fmt.Errorf("unknown rotation mode: %s", mode)
 }

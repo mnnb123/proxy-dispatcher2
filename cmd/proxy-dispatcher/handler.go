@@ -83,7 +83,7 @@ func (h *ConnHandler) checkWhitelist(conn net.Conn, clientIP string) bool {
 // handleSOCKS5 routes a SOCKS5 connection through the upstream proxy
 // (or directly if the destination matches a bypass rule).
 func (h *ConnHandler) handleSOCKS5(ctx context.Context, buffConn *engine.BufferedConn, group *engine.ManagedGroup, clientIP string, outputPort int, startTime time.Time) {
-	proxy, err := group.Rotator.Next(clientIP)
+	proxy, err := group.NextProxy(outputPort, clientIP)
 	if err != nil {
 		h.logger.Warn("no proxy available", "group", group.Name)
 		h.record(outputPort, clientIP, "", "", "", "", "socks5", "proxy", "", "no proxy available", 502, 0, 0, 0)
@@ -166,7 +166,7 @@ func (h *ConnHandler) handleHTTP(ctx context.Context, buffConn *engine.BufferedC
 
 // handleHTTPFallback handles connections where HTTP target extraction failed.
 func (h *ConnHandler) handleHTTPFallback(ctx context.Context, buffConn *engine.BufferedConn, group *engine.ManagedGroup, clientIP string, outputPort int, startTime time.Time) {
-	proxy, err := group.Rotator.Next(clientIP)
+	proxy, err := group.NextProxy(outputPort, clientIP)
 	if err != nil {
 		h.logger.Warn("no proxy available", "group", group.Name)
 		h.record(outputPort, clientIP, "unknown", "", "", "", "http", "proxy", "", "no proxy available", 502, 0, 0, 0)
@@ -220,7 +220,18 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 	var finalRes engine.SizeForwardResult
 	var finalProxyAddr string
 
-	_, retryErr := h.retryHandler.WithRetry(ctx, group.Rotator, clientIP, func(proxy *config.ProxyEntry) error {
+	// For fixed rotation, create a single-proxy rotator for retry compatibility.
+	rotator := group.Rotator
+	if _, ok := group.Rotator.(*engine.FixedRotator); ok {
+		proxy, err := group.NextProxy(outputPort, clientIP)
+		if err != nil {
+			h.record(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
+			return
+		}
+		rotator = &engine.SingleProxyRotator{Proxy: proxy}
+	}
+
+	_, retryErr := h.retryHandler.WithRetry(ctx, rotator, clientIP, func(proxy *config.ProxyEntry) error {
 		group.Rotator.IncrementConn(proxy)
 		defer group.Rotator.DecrementConn(proxy)
 
