@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"proxy-dispatcher/internal/bandwidth"
@@ -34,14 +35,51 @@ type SizeForwardResult struct {
 	RouteChanged bool
 }
 
+// BypassEvent records a single auto-bypass decision.
+type BypassEvent struct {
+	Time      int64  `json:"time"`
+	Domain    string `json:"domain"`
+	Reason    string `json:"reason"`
+	AvgSize   int64  `json:"avg_size"`
+	Threshold int64  `json:"threshold"`
+}
+
 // SizeForwarder inspects response size and optionally switches to direct.
 type SizeForwarder struct {
-	deps SizeForwarderDeps
+	deps   SizeForwarderDeps
+	mu     sync.Mutex
+	events []BypassEvent
+	total  int64
 }
 
 // NewSizeForwarder creates a SizeForwarder.
 func NewSizeForwarder(deps SizeForwarderDeps) *SizeForwarder {
 	return &SizeForwarder{deps: deps}
+}
+
+func (sf *SizeForwarder) recordEvent(domain, reason string, avgSize, threshold int64) {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	sf.total++
+	sf.events = append(sf.events, BypassEvent{
+		Time:      time.Now().UnixMilli(),
+		Domain:    domain,
+		Reason:    reason,
+		AvgSize:   avgSize,
+		Threshold: threshold,
+	})
+	if len(sf.events) > 100 {
+		sf.events = sf.events[len(sf.events)-100:]
+	}
+}
+
+// BypassStats returns recent bypass events and total count.
+func (sf *SizeForwarder) BypassStats() ([]BypassEvent, int64) {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	out := make([]BypassEvent, len(sf.events))
+	copy(out, sf.events)
+	return out, sf.total
 }
 
 // Forward sends a request through proxyConn, optionally switching to
@@ -86,6 +124,7 @@ func (sf *SizeForwarder) Forward(ctx context.Context, client net.Conn, proxyConn
 		avg := sf.deps.Tracker.GetDomainAvgSize(domain)
 		if avg > cfg.SizeThreshold {
 			sf.deps.Logger.Info("auto-bypass predict: switching HTTPS to direct", "domain", domain, "avg_size", avg, "threshold", cfg.SizeThreshold)
+			sf.recordEvent(domain, "predict (HTTPS)", avg, cfg.SizeThreshold)
 			proxyConn.Close()
 			res, err := sf.retryDirect(ctx, client, reqInfo, consumedReqBytes)
 			res.RouteChanged = true
@@ -139,6 +178,7 @@ func (sf *SizeForwarder) headerStrategy(ctx context.Context, client, proxyConn n
 
 	if contentLength > cfg.SizeThreshold {
 		sf.deps.Logger.Info("header strategy: large response, switching to direct", "domain", domain, "content_length", contentLength)
+		sf.recordEvent(domain, "header (Content-Length: "+strconv.FormatInt(contentLength, 10)+")", contentLength, cfg.SizeThreshold)
 		proxyConn.Close()
 		res, err := sf.retryDirect(ctx, client, reqInfo, consumed)
 		res.RouteChanged = true
@@ -175,6 +215,7 @@ func (sf *SizeForwarder) predictStrategy(ctx context.Context, client, proxyConn 
 		avg := sf.deps.Tracker.GetDomainAvgSize(domain)
 		if avg > int64(float64(cfg.SizeThreshold)*0.8) {
 			sf.deps.Logger.Info("predict strategy: bypassing", "domain", domain, "avg_size", avg)
+			sf.recordEvent(domain, "predict (HTTP)", avg, cfg.SizeThreshold)
 			proxyConn.Close()
 			res, err := sf.retryDirect(ctx, client, reqInfo, consumed)
 			res.RouteChanged = true

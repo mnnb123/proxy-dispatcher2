@@ -13,6 +13,18 @@ func (s *Server) handleGetAutoBypass(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, s.cfg.AutoBypass)
 }
 
+func (s *Server) handleAutoBypassStats(w http.ResponseWriter, r *http.Request) {
+	if s.sizeForwarder == nil {
+		respondJSON(w, http.StatusOK, map[string]interface{}{"events": []struct{}{}, "total": 0})
+		return
+	}
+	events, total := s.sizeForwarder.BypassStats()
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"events": events,
+		"total":  total,
+	})
+}
+
 func (s *Server) handlePostAutoBypass(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req config.AutoBypassConfig

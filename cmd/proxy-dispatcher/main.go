@@ -530,7 +530,7 @@ func main() {
 	apiServer := api.NewServerWithDeps(api.ServerDeps{
 		Cfg: cfg, CfgPath: *configPath, Rotator: nil, Limiter: limiter,
 		RuleEngine: ruleEngine, WhitelistMgr: whitelistMgr, BruteGuard: bruteGuard,
-		Tracker: tracker, BudgetCtrl: budgetCtrl, ListenerMg: lm,
+		Tracker: tracker, BudgetCtrl: budgetCtrl, SizeForwarder: sizeForwarder, ListenerMg: lm,
 		ReportHub: reportHub, GroupMgr: groupMgr, HealthChecker: healthChecker,
 		Importer:       urlImporter,
 		UserMgr:        userMgr,

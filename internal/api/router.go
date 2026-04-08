@@ -28,9 +28,10 @@ type Server struct {
 	ruleEngine    *rules.RuleEngine
 	whitelistMgr  *security.WhitelistManager
 	bruteGuard    *security.BruteGuard
-	tracker       *bandwidth.Tracker
-	budgetCtrl    *bandwidth.BudgetController
-	reportHub     *report.ReportHub
+	tracker        *bandwidth.Tracker
+	budgetCtrl     *bandwidth.BudgetController
+	sizeForwarder  *engine.SizeForwarder
+	reportHub      *report.ReportHub
 	groupMgr      *engine.GroupManager
 	healthChecker *health.HealthChecker
 	importer      *importer.URLImporter
@@ -62,6 +63,7 @@ type ServerDeps struct {
 	BruteGuard     *security.BruteGuard
 	Tracker        *bandwidth.Tracker
 	BudgetCtrl     *bandwidth.BudgetController
+	SizeForwarder  *engine.SizeForwarder
 	ListenerMg     *engine.ListenerManager
 	ReportHub      *report.ReportHub
 	GroupMgr       *engine.GroupManager
@@ -102,6 +104,7 @@ func NewServerWithDeps(d ServerDeps) *Server {
 		bruteGuard:    d.BruteGuard,
 		tracker:       d.Tracker,
 		budgetCtrl:    d.BudgetCtrl,
+		sizeForwarder: d.SizeForwarder,
 		reportHub:     d.ReportHub,
 		groupMgr:      d.GroupMgr,
 		healthChecker: d.HealthChecker,
@@ -156,6 +159,7 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("GET /api/config/whitelist/banned", s.handleBannedIPs)
 	s.mux.HandleFunc("GET /api/config/auto-bypass", s.handleGetAutoBypass)
 	s.mux.HandleFunc("POST /api/config/auto-bypass", s.handlePostAutoBypass)
+	s.mux.HandleFunc("GET /api/auto-bypass/stats", s.handleAutoBypassStats)
 	s.mux.HandleFunc("GET /api/config/force-proxy", s.handleGetForceProxy)
 	s.mux.HandleFunc("POST /api/config/force-proxy", s.handlePostForceProxy)
 	s.mux.HandleFunc("GET /api/config/bandwidth-budget", s.handleGetBandwidthBudget)

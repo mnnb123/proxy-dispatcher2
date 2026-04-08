@@ -334,6 +334,20 @@
         </div>
         <button class="btn btn-primary" id="saveAbpBtn">Save Auto Bypass</button>
         <div id="abpMsg" class="msg"></div>
+
+        <h3 style="margin-top:20px;color:#a78bfa">Auto Bypass Activity</h3>
+        <div class="stat-cards" style="margin-bottom:10px">
+          <div class="stat-card"><div class="stat-val" id="abpTotal">0</div><div class="stat-lbl">Total Bypassed</div></div>
+        </div>
+        <div id="abpEventsTable" style="max-height:250px;overflow-y:auto;font-size:12px">
+          <table class="data-table">
+            <thead><tr>
+              <th>Time</th><th>Domain</th><th>Reason</th><th>Avg Size</th><th>Threshold</th>
+            </tr></thead>
+            <tbody id="abpEventsBody"></tbody>
+          </table>
+        </div>
+        <button class="btn btn-sm" id="abpRefreshBtn" style="margin-top:8px">Refresh</button>
       </section>
 
       <section class="card">

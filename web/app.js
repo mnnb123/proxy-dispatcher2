@@ -399,6 +399,25 @@ document.getElementById('saveAbpBtn').addEventListener('click', async () => {
   setMsg('abpMsg', 'Saved', false);
 });
 
+// ── Auto Bypass Stats ──────────────────────────────────────
+async function refreshAbpStats() {
+  const r = await apiCall('GET', '/auto-bypass/stats');
+  if (!r.ok) return;
+  document.getElementById('abpTotal').textContent = r.data.total || 0;
+  const tbody = document.getElementById('abpEventsBody');
+  tbody.innerHTML = '';
+  const events = (r.data.events || []).reverse();
+  events.forEach(ev => {
+    const tr = document.createElement('tr');
+    tr.style.color = '#4ade80';
+    const ts = new Date(ev.time).toLocaleTimeString();
+    tr.innerHTML = '<td>' + ts + '</td><td>' + ev.domain + '</td><td>' + ev.reason +
+      '</td><td>' + formatBytes(ev.avg_size) + '</td><td>' + formatBytes(ev.threshold) + '</td>';
+    tbody.appendChild(tr);
+  });
+}
+document.getElementById('abpRefreshBtn').addEventListener('click', refreshAbpStats);
+
 // ── Force Proxy ────────────────────────────────────────────
 async function loadForceProxy() {
   const r = await apiCall('GET', '/api/config/force-proxy');
@@ -996,6 +1015,7 @@ async function initAll() {
   await loadConfig();
   loadWhitelist();
   loadAutoBypass();
+  refreshAbpStats();
   loadForceProxy();
   loadBudgetConfig();
   loadHealthStatus();
