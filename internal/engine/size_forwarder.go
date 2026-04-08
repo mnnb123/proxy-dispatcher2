@@ -43,14 +43,23 @@ type BypassEvent struct {
 // OnAutoBypassFunc is called when a domain should be added to bypass rules.
 type OnAutoBypassFunc func(domain string)
 
+// portDomainAccum tracks accumulated bytes for a domain on a specific port
+// within the configured time window.
+type portDomainAccum struct {
+	bytes     int64
+	windowEnd time.Time
+}
+
 // SizeForwarder inspects response size and optionally adds domains to bypass.
 type SizeForwarder struct {
-	deps          SizeForwarderDeps
-	onAutoBypass  OnAutoBypassFunc
-	mu            sync.Mutex
-	events        []BypassEvent
-	total         int64
-	autoAdded     map[string]bool // track already-added domains to avoid duplicates
+	deps         SizeForwarderDeps
+	onAutoBypass OnAutoBypassFunc
+	mu           sync.Mutex
+	events       []BypassEvent
+	total        int64
+	autoAdded    map[string]bool
+	// accum tracks bytes per "port|domain" within time window.
+	accum map[string]*portDomainAccum
 }
 
 // NewSizeForwarder creates a SizeForwarder.
@@ -58,6 +67,7 @@ func NewSizeForwarder(deps SizeForwarderDeps) *SizeForwarder {
 	return &SizeForwarder{
 		deps:      deps,
 		autoAdded: make(map[string]bool),
+		accum:     make(map[string]*portDomainAccum),
 	}
 }
 
@@ -68,7 +78,9 @@ func (sf *SizeForwarder) SetOnAutoBypass(fn OnAutoBypassFunc) {
 
 // UpdateConfig updates the auto-bypass config at runtime.
 func (sf *SizeForwarder) UpdateConfig(cfg config.AutoBypassConfig) {
+	sf.mu.Lock()
 	sf.deps.AutoBypassCfg = cfg
+	sf.mu.Unlock()
 }
 
 func (sf *SizeForwarder) recordEvent(domain string, port int, size, threshold int64) {
@@ -87,11 +99,14 @@ func (sf *SizeForwarder) recordEvent(domain string, port int, size, threshold in
 	}
 }
 
-// checkAndAutoAdd checks if a single connection's bytes on a specific port
-// exceed the threshold and adds to bypass rules.
+// checkAndAutoAdd accumulates bytes for domain+port within time window.
+// If accumulated bytes exceed threshold within the window → add to bypass.
 func (sf *SizeForwarder) checkAndAutoAdd(domain string, port int, connBytes int64) {
+	sf.mu.Lock()
 	cfg := sf.deps.AutoBypassCfg
-	if !cfg.Enabled || connBytes <= cfg.SizeThreshold {
+	sf.mu.Unlock()
+
+	if !cfg.Enabled || cfg.SizeThreshold <= 0 {
 		return
 	}
 	// Already in bypass rules?
@@ -103,22 +118,58 @@ func (sf *SizeForwarder) checkAndAutoAdd(domain string, port int, connBytes int6
 	if sf.deps.RuleEngine.IsForceProxy(domain) {
 		return
 	}
-	// Already auto-added this session?
+
 	sf.mu.Lock()
+	// Already auto-added this session?
 	if sf.autoAdded[domain] {
 		sf.mu.Unlock()
 		return
 	}
-	sf.autoAdded[domain] = true
+
+	key := fmt.Sprintf("%d|%s", port, domain)
+	now := time.Now()
+	windowDur := time.Duration(cfg.TimeWindowSec) * time.Second
+	if windowDur <= 0 {
+		windowDur = 2 * time.Minute // default 2 minutes
+	}
+
+	acc, ok := sf.accum[key]
+	if !ok || now.After(acc.windowEnd) {
+		// Start new window.
+		sf.accum[key] = &portDomainAccum{
+			bytes:     connBytes,
+			windowEnd: now.Add(windowDur),
+		}
+		acc = sf.accum[key]
+	} else {
+		// Accumulate within window.
+		acc.bytes += connBytes
+	}
+
+	totalInWindow := acc.bytes
+	exceeded := totalInWindow > cfg.SizeThreshold
+	if exceeded {
+		sf.autoAdded[domain] = true
+	}
 	sf.mu.Unlock()
 
-	sf.deps.Logger.Info("auto-bypass: domain exceeded threshold on single port, adding to bypass rules",
-		"domain", domain, "port", port, "bytes", connBytes, "threshold", cfg.SizeThreshold)
-	sf.recordEvent(domain, port, connBytes, cfg.SizeThreshold)
-
-	if sf.onAutoBypass != nil {
-		sf.onAutoBypass(domain)
+	if exceeded {
+		sf.deps.Logger.Info("auto-bypass: domain exceeded threshold within time window",
+			"domain", domain, "port", port, "bytes", totalInWindow,
+			"threshold", cfg.SizeThreshold, "window_sec", cfg.TimeWindowSec)
+		sf.recordEvent(domain, port, totalInWindow, cfg.SizeThreshold)
+		if sf.onAutoBypass != nil {
+			sf.onAutoBypass(domain)
+		}
 	}
+}
+
+// ClearEvents resets the activity log.
+func (sf *SizeForwarder) ClearEvents() {
+	sf.mu.Lock()
+	defer sf.mu.Unlock()
+	sf.events = nil
+	sf.total = 0
 }
 
 // BypassStats returns recent bypass events and total count.
@@ -130,21 +181,9 @@ func (sf *SizeForwarder) BypassStats() ([]BypassEvent, int64) {
 	return out, sf.total
 }
 
-// AutoAddedDomains returns the list of domains auto-added this session.
-func (sf *SizeForwarder) AutoAddedDomains() []string {
-	sf.mu.Lock()
-	defer sf.mu.Unlock()
-	out := make([]string, 0, len(sf.autoAdded))
-	for d := range sf.autoAdded {
-		out = append(out, d)
-	}
-	return out
-}
-
 // Forward sends a request through proxyConn. After the pipe completes,
-// checks if this single connection's bytes exceed the threshold and auto-adds
-// the domain to bypass rules if so. listenPort identifies which output port
-// handled this connection — threshold is checked per-port (per-connection).
+// accumulates bytes per domain+port within the time window and auto-adds
+// the domain to bypass rules if the accumulated total exceeds the threshold.
 func (sf *SizeForwarder) Forward(ctx context.Context, client net.Conn, proxyConn net.Conn, reqInfo *RequestInfo, consumedReqBytes []byte, listenPort int) (SizeForwardResult, error) {
 	domain := reqInfo.Host
 	cfg := sf.deps.AutoBypassCfg
@@ -178,7 +217,7 @@ func (sf *SizeForwarder) Forward(ctx context.Context, client net.Conn, proxyConn
 	connBytes := pr.BytesSent + pr.BytesReceived
 	sf.deps.Tracker.Record(domain, connBytes, "proxy")
 
-	// Auto-bypass check: per-connection bytes on this port vs threshold.
+	// Auto-bypass check: accumulate per port+domain within time window.
 	if cfg.Enabled {
 		sf.checkAndAutoAdd(domain, listenPort, connBytes)
 	}

@@ -122,6 +122,7 @@ type WhitelistConfig struct {
 type AutoBypassConfig struct {
 	Enabled         bool   `json:"enabled"`
 	SizeThreshold   int64  `json:"size_threshold"`
+	TimeWindowSec   int    `json:"time_window_sec"`
 	Action          string `json:"action"`
 	ThrottleSpeedBps int64 `json:"throttle_speed_bps"`
 	Strategy        string `json:"strategy"`
@@ -289,8 +290,8 @@ func DefaultConfig() *AppConfig {
 			AutoBan: AutoBanConfig{Enabled: true, MaxAttempts: 10, BanDurationSec: 3600},
 		},
 		AutoBypass: AutoBypassConfig{
-			Enabled: false, SizeThreshold: 1048576, Action: "direct",
-			ThrottleSpeedBps: 102400, Strategy: "header", PredictEnabled: true,
+			Enabled: false, SizeThreshold: 1048576, TimeWindowSec: 120,
+			Action: "direct", ThrottleSpeedBps: 102400, Strategy: "header", PredictEnabled: true,
 		},
 		BandwidthBudget: BudgetConfig{
 			Enabled: false, DailyLimitBytes: 5368709120, DomainHourlyLimit: 104857600,

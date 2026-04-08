@@ -379,14 +379,18 @@ async function loadAutoBypass() {
     document.getElementById('abpThresholdVal').value = th / 1024;
     document.getElementById('abpThresholdUnit').value = '1024';
   }
+  const windowSec = r.data.time_window_sec || 120;
+  document.getElementById('abpWindowMin').value = Math.round(windowSec / 60) || 2;
 }
 
 document.getElementById('saveAbpBtn').addEventListener('click', async () => {
   const unit = parseInt(document.getElementById('abpThresholdUnit').value, 10);
   const val = parseFloat(document.getElementById('abpThresholdVal').value);
+  const windowMin = parseInt(document.getElementById('abpWindowMin').value, 10) || 2;
   const body = {
     enabled: document.getElementById('abpEnabled').checked,
     size_threshold: Math.round(val * unit),
+    time_window_sec: windowMin * 60,
     action: 'direct',
     strategy: 'stream',
     predict_enabled: true,
@@ -410,11 +414,25 @@ async function refreshAbpStats() {
     const ts = new Date(ev.time).toLocaleTimeString();
     tr.innerHTML = '<td>' + ts + '</td><td>' + (ev.port||'') + '</td><td style="font-weight:600">' + ev.domain +
       '</td><td>' + formatBytes(ev.size) + '</td><td>' + formatBytes(ev.threshold) +
-      '</td><td><span style="background:#166534;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:600">ADDED TO BYPASS</span></td>';
+      '</td><td><span style="background:#166534;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:600">BYPASSED</span></td>' +
+      '<td><button class="btn btn-sm" style="background:#f59e0b;color:#000;padding:2px 6px;font-size:11px" onclick="addToForceProxy(\'' +
+      ev.domain.replace(/'/g, "\\'") + '\')">→ Force Proxy</button></td>';
     tbody.appendChild(tr);
   });
 }
+
+async function addToForceProxy(domain) {
+  const r = await apiCall('POST', '/api/auto-bypass/force-proxy', { domain });
+  if (!r.ok) { alert('Failed: ' + (r.data.error||'')); return; }
+  refreshAbpStats();
+  loadForceProxy();
+}
+
 document.getElementById('abpRefreshBtn').addEventListener('click', refreshAbpStats);
+document.getElementById('abpClearBtn').addEventListener('click', async () => {
+  await apiCall('POST', '/api/auto-bypass/clear');
+  refreshAbpStats();
+});
 
 // ── Force Proxy ────────────────────────────────────────────
 async function loadForceProxy() {

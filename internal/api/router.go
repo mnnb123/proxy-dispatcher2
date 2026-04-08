@@ -160,6 +160,8 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("GET /api/config/auto-bypass", s.handleGetAutoBypass)
 	s.mux.HandleFunc("POST /api/config/auto-bypass", s.handlePostAutoBypass)
 	s.mux.HandleFunc("GET /api/auto-bypass/stats", s.handleAutoBypassStats)
+	s.mux.HandleFunc("POST /api/auto-bypass/clear", s.handleAutoBypassClear)
+	s.mux.HandleFunc("POST /api/auto-bypass/force-proxy", s.handleAddForceProxy)
 	s.mux.HandleFunc("GET /api/config/force-proxy", s.handleGetForceProxy)
 	s.mux.HandleFunc("POST /api/config/force-proxy", s.handlePostForceProxy)
 	s.mux.HandleFunc("GET /api/config/bandwidth-budget", s.handleGetBandwidthBudget)

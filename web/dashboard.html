@@ -323,6 +323,11 @@
             <option value="1048576" selected>MB</option>
           </select></div>
         </div>
+        <label>Time Window (tổng bytes trong khoảng thời gian này)</label>
+        <div class="row">
+          <div class="col"><input type="number" id="abpWindowMin" value="2" min="1" max="60"></div>
+          <div class="col"><span style="line-height:38px;color:#8a8ab0">phút</span></div>
+        </div>
         <button class="btn btn-primary" id="saveAbpBtn" style="margin-top:12px">Save Auto Bypass</button>
         <div id="abpMsg" class="msg"></div>
 
@@ -333,12 +338,15 @@
         <div id="abpEventsTable" style="max-height:300px;overflow-y:auto;font-size:12px">
           <table class="data-table">
             <thead><tr>
-              <th>Time</th><th>Port</th><th>Domain</th><th>Traffic Size</th><th>Threshold</th><th>Status</th>
+              <th>Time</th><th>Port</th><th>Domain</th><th>Traffic Size</th><th>Threshold</th><th>Status</th><th>Action</th>
             </tr></thead>
             <tbody id="abpEventsBody"></tbody>
           </table>
         </div>
-        <button class="btn btn-sm" id="abpRefreshBtn" style="margin-top:8px">Refresh</button>
+        <div style="margin-top:8px">
+          <button class="btn btn-sm" id="abpRefreshBtn">Refresh</button>
+          <button class="btn btn-sm" id="abpClearBtn" style="background:#ef4444;margin-left:6px">Clear</button>
+        </div>
       </section>
 
       <section class="card">

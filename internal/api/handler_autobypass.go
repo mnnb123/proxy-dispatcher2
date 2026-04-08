@@ -25,6 +25,52 @@ func (s *Server) handleAutoBypassStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleAutoBypassClear(w http.ResponseWriter, r *http.Request) {
+	if s.sizeForwarder != nil {
+		s.sizeForwarder.ClearEvents()
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleAddForceProxy adds a single domain to Force Proxy and removes it from Bypass Rules.
+func (s *Server) handleAddForceProxy(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+		respondError(w, http.StatusBadRequest, "missing domain")
+		return
+	}
+	domain := strings.TrimSpace(req.Domain)
+
+	// Check if already in force proxy.
+	for _, fp := range s.cfg.ForceProxyDomains {
+		if strings.EqualFold(fp.Pattern, domain) {
+			respondJSON(w, http.StatusOK, map[string]string{"status": "already exists"})
+			return
+		}
+	}
+
+	// Add to force proxy.
+	s.cfg.ForceProxyDomains = append(s.cfg.ForceProxyDomains, config.DomainRule{
+		Pattern: domain, Enabled: true,
+	})
+
+	// Remove from bypass rules.
+	filtered := make([]config.DomainRule, 0, len(s.cfg.BypassDomains))
+	for _, bd := range s.cfg.BypassDomains {
+		if !strings.EqualFold(bd.Pattern, domain) {
+			filtered = append(filtered, bd)
+		}
+	}
+	s.cfg.BypassDomains = filtered
+
+	_ = s.ruleEngine.Reload(s.cfg)
+	_ = config.SaveConfig(s.cfgPath, s.cfg)
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (s *Server) handlePostAutoBypass(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req config.AutoBypassConfig
