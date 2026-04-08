@@ -274,6 +274,14 @@ func main() {
 				bytesSent = sResult.BytesSent
 				bytesRecv = sResult.BytesRecv
 			}
+
+			// Feed bytes into bandwidth tracker and auto-bypass.
+			totalBytes := bytesSent + bytesRecv
+			if destHost != "" && totalBytes > 0 {
+				tracker.Record(destHost, totalBytes, "proxy")
+				sizeForwarder.CheckAutoBypass(destHost, outputPort, totalBytes)
+			}
+
 			if sErr != nil {
 				errStr := sErr.Error()
 				// broken pipe / connection reset = normal tunnel close, not an error.

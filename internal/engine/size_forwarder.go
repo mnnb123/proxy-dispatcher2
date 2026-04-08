@@ -164,6 +164,12 @@ func (sf *SizeForwarder) checkAndAutoAdd(domain string, port int, connBytes int6
 	}
 }
 
+// CheckAutoBypass allows external callers (e.g. SOCKS5 path) to feed
+// bytes into the auto-bypass accumulator for a given domain+port.
+func (sf *SizeForwarder) CheckAutoBypass(domain string, port int, totalBytes int64) {
+	sf.checkAndAutoAdd(domain, port, totalBytes)
+}
+
 // ClearEvents resets the activity log.
 func (sf *SizeForwarder) ClearEvents() {
 	sf.mu.Lock()
