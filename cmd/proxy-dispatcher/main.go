@@ -114,7 +114,6 @@ func main() {
 
 	// Core Phase 1.
 	limiter := auth.NewLoginLimiter(5, 15*time.Minute)
-	socks5H := engine.NewSocks5Handler(logger)
 	httpH := engine.NewHttpHandler(logger)
 
 	// Phase 5: group manager.
@@ -131,6 +130,7 @@ func main() {
 		os.Exit(1)
 	}
 	directDialer := engine.NewDirectDialer(time.Duration(cfg.ConnTimeout)*time.Second, logger)
+	socks5H := engine.NewSocks5Handler(logger, ruleEngine)
 	idleTimeout := time.Duration(cfg.IdleTimeout) * time.Second
 
 	// Phase 3: whitelist, brute guard, bandwidth, budget, size forwarder.
@@ -280,22 +280,36 @@ func main() {
 
 			// Feed bytes into bandwidth tracker and auto-bypass.
 			totalBytes := bytesSent + bytesRecv
-			if destHost != "" && totalBytes > 0 {
-				tracker.Record(destHost, totalBytes, "proxy")
-				sizeForwarder.CheckAutoBypass(destHost, outputPort, totalBytes)
+			routeType := "proxy"
+			if sResult != nil && sResult.RouteType != "" {
+				routeType = sResult.RouteType
+			}
+			if destHost != "" {
+				if totalBytes > 0 {
+					tracker.Record(destHost, totalBytes, routeType)
+				}
+				if routeType == "proxy" {
+					sizeForwarder.CheckAutoBypass(destHost, outputPort, totalBytes)
+				}
 			}
 
+			inputProxy := proxyAddr
+			if routeType == "direct" {
+				inputProxy = ""
+			}
 			if sErr != nil {
 				errStr := sErr.Error()
 				// broken pipe / connection reset = normal tunnel close, not an error.
 				if strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "use of closed") {
-					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, "", 200, bytesSent, bytesRecv, lat)
+					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", routeType, inputProxy, "", 200, bytesSent, bytesRecv, lat)
+				} else if strings.Contains(errStr, "blocked by rule") {
+					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "blocked", "", "blocked by rule", 403, 0, 0, lat)
 				} else {
 					logger.Debug("socks5 session error", "error", sErr)
-					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, errStr, 502, bytesSent, bytesRecv, lat)
+					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", routeType, inputProxy, errStr, 502, bytesSent, bytesRecv, lat)
 				}
 			} else {
-				recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "proxy", proxyAddr, "", 200, bytesSent, bytesRecv, lat)
+				recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", routeType, inputProxy, "", 200, bytesSent, bytesRecv, lat)
 			}
 			return
 		}

@@ -15,6 +15,7 @@ import (
 	socks5 "github.com/armon/go-socks5"
 
 	"proxy-dispatcher/internal/config"
+	"proxy-dispatcher/internal/rules"
 )
 
 // Socks5Result holds destination info and byte counts from a SOCKS5 session.
@@ -24,6 +25,7 @@ type Socks5Result struct {
 	BytesRecv    int64  // bytes received from upstream (download)
 	BytesSent    int64  // bytes sent to upstream (upload)
 	ProxyUsed    string // set if a retry switched to a different proxy
+	RouteType    string // "proxy", "direct", or "blocked"
 }
 
 // countingConn wraps a net.Conn to track bytes read and written.
@@ -67,12 +69,13 @@ func (d *domainResolver) Resolve(ctx context.Context, name string) (context.Cont
 // Socks5Handler handles incoming SOCKS5 client connections by tunneling
 // them through an upstream proxy.
 type Socks5Handler struct {
-	logger *slog.Logger
+	logger     *slog.Logger
+	ruleEngine *rules.RuleEngine
 }
 
 // NewSocks5Handler creates a new SOCKS5 handler.
-func NewSocks5Handler(logger *slog.Logger) *Socks5Handler {
-	return &Socks5Handler{logger: logger}
+func NewSocks5Handler(logger *slog.Logger, ruleEngine *rules.RuleEngine) *Socks5Handler {
+	return &Socks5Handler{logger: logger, ruleEngine: ruleEngine}
 }
 
 // HandleConnection serves a SOCKS5 session on clientConn, tunneling all
@@ -109,6 +112,27 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 		if result.DestHost != "" && port != "" {
 			targetAddr = net.JoinHostPort(result.DestHost, port)
 		}
+
+		// Check bypass/block rules for this domain.
+		if h.ruleEngine != nil && result.DestHost != "" {
+			action := h.ruleEngine.Evaluate(result.DestHost, "")
+			switch action.Type {
+			case "direct", "resource":
+				// Bypass: connect directly to target, skip upstream proxy.
+				result.RouteType = "direct"
+				d := net.Dialer{Timeout: proxyDialTimeout}
+				conn, err := d.DialContext(dialCtx, network, targetAddr)
+				if err != nil {
+					return nil, err
+				}
+				counter = &countingConn{Conn: conn}
+				return counter, nil
+			case "block":
+				result.RouteType = "blocked"
+				return nil, fmt.Errorf("blocked by rule")
+			}
+		}
+		result.RouteType = "proxy"
 
 		// Try current proxy, then retry with different proxies on failure.
 		tryProxy := func(p config.ProxyEntry) (net.Conn, error) {
