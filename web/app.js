@@ -530,6 +530,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // ── Report Tab ─────────────────────────────────────────────
 let liveWS = null;
+let liveTrafficRows = {};
 let reportInterval = null;
 
 function wsConnect() {
@@ -538,13 +539,38 @@ function wsConnect() {
   liveWS = new WebSocket(proto + '//' + location.host + '/ws/live-traffic?token=' + authToken);
   liveWS.onopen = () => { document.getElementById('wsStatus').textContent = 'connected'; document.getElementById('wsStatus').style.color = '#4ade80'; };
   liveWS.onclose = () => { document.getElementById('wsStatus').textContent = 'disconnected'; document.getElementById('wsStatus').style.color = '#f87171'; };
+  liveTrafficRows = {};
   liveWS.onmessage = (evt) => {
     try {
       const e = JSON.parse(evt.data);
       const tbody = document.getElementById('liveTrafficBody');
+      const domain = e.domain || 'unknown';
+      const port = e.listen_port || 0;
+      const route = (e.route_type||'').toLowerCase();
+      const key = domain + '|' + port + '|' + route;
+      const bytes = (e.bytes_sent||0) + (e.bytes_recv||0);
+
+      if (liveTrafficRows[key]) {
+        // Update existing row.
+        const row = liveTrafficRows[key];
+        row.hits++;
+        row.bytes += bytes;
+        row.latency = Math.max(row.latency, e.latency_ms||0);
+        row.ts = new Date(e.timestamp).toLocaleTimeString();
+        if (e.error) row.error = e.error;
+        row.tr.querySelector('.lt-time').textContent = row.ts;
+        row.tr.querySelector('.lt-hits').textContent = row.hits;
+        row.tr.querySelector('.lt-latency').textContent = row.latency + 'ms';
+        row.tr.querySelector('.lt-bytes').textContent = formatBytes(row.bytes);
+        if (e.error) row.tr.querySelector('.lt-error').textContent = e.error;
+        // Move to top.
+        tbody.insertBefore(row.tr, tbody.firstChild);
+        return;
+      }
+
+      // New row.
       const tr = document.createElement('tr');
       const ts = new Date(e.timestamp).toLocaleTimeString();
-      const route = (e.route_type||'').toLowerCase();
       const rowColor = route === 'direct' ? '#4ade80' : route === 'proxy' ? '#f59e0b' : '#e2e8f0';
       tr.style.color = rowColor;
       const routeBadge = route === 'direct'
@@ -552,11 +578,17 @@ function wsConnect() {
         : route === 'proxy'
         ? '<span style="background:#92400e;color:#fbbf24;padding:2px 6px;border-radius:4px;font-weight:600">PROXY</span>'
         : '<span style="background:#334155;color:#e2e8f0;padding:2px 6px;border-radius:4px">' + (e.route_type||'') + '</span>';
-      tr.innerHTML = '<td>' + ts + '</td><td>' + (e.listen_port||'') + '</td><td>' + (e.client_ip||'') + '</td><td>' + (e.domain||'') + '</td><td>' + (e.method||'') +
-        '</td><td>' + (e.status_code||'') + '</td><td>' + routeBadge + '</td><td>' + (e.latency_ms||0) + 'ms</td><td>' +
-        formatBytes((e.bytes_sent||0)+(e.bytes_recv||0)) + '</td><td style="color:#f87171">' + (e.error||'') + '</td>';
+      tr.innerHTML = '<td class="lt-time">' + ts + '</td><td>' + port + '</td><td>' + (e.client_ip||'') + '</td><td>' + domain + '</td><td>' + (e.method||'') +
+        '</td><td>' + (e.status_code||'') + '</td><td>' + routeBadge + '</td><td class="lt-hits">1</td><td class="lt-latency">' + (e.latency_ms||0) + 'ms</td><td class="lt-bytes">' +
+        formatBytes(bytes) + '</td><td class="lt-error" style="color:#f87171">' + (e.error||'') + '</td>';
       tbody.insertBefore(tr, tbody.firstChild);
-      while (tbody.children.length > 200) tbody.removeChild(tbody.lastChild);
+      liveTrafficRows[key] = { tr, hits: 1, bytes, latency: e.latency_ms||0, ts, error: e.error||'' };
+      while (tbody.children.length > 200) {
+        const last = tbody.lastChild;
+        // Clean up map entry for removed row.
+        for (const k in liveTrafficRows) { if (liveTrafficRows[k].tr === last) { delete liveTrafficRows[k]; break; } }
+        tbody.removeChild(last);
+      }
     } catch(_) {}
   };
 }
@@ -568,7 +600,7 @@ function wsSend(obj) {
 document.getElementById('wsConnectBtn').addEventListener('click', wsConnect);
 document.getElementById('wsPauseBtn').addEventListener('click', () => wsSend({action:'pause'}));
 document.getElementById('wsResumeBtn').addEventListener('click', () => wsSend({action:'resume'}));
-document.getElementById('wsClearBtn').addEventListener('click', () => { document.getElementById('liveTrafficBody').innerHTML = ''; });
+document.getElementById('wsClearBtn').addEventListener('click', () => { document.getElementById('liveTrafficBody').innerHTML = ''; liveTrafficRows = {}; });
 document.getElementById('wsFilterBtn').addEventListener('click', () => wsSend({action:'filter', filter: document.getElementById('wsFilter').value}));
 
 // Ring buffer stats
