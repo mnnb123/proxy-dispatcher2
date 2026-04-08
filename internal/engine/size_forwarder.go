@@ -80,15 +80,18 @@ func (sf *SizeForwarder) Forward(ctx context.Context, client net.Conn, proxyConn
 		return SizeForwardResult{PipeResult: pr}, nil
 	}
 
-	// CONNECT tunnels: predict or stream only.
+	// CONNECT tunnels: predict check first, then stream-monitor the pipe.
 	if reqInfo.IsHTTPS {
-		if cfg.PredictEnabled && cfg.Strategy != "stream" {
-			avg := sf.deps.Tracker.GetDomainAvgSize(domain)
-			if avg > int64(float64(cfg.SizeThreshold)*0.8) {
-				proxyConn.Close()
-				return sf.retryDirect(ctx, client, reqInfo, consumedReqBytes)
-			}
+		// Predict: if average size exceeds threshold, switch to direct immediately.
+		avg := sf.deps.Tracker.GetDomainAvgSize(domain)
+		if avg > cfg.SizeThreshold {
+			sf.deps.Logger.Info("auto-bypass predict: switching HTTPS to direct", "domain", domain, "avg_size", avg, "threshold", cfg.SizeThreshold)
+			proxyConn.Close()
+			res, err := sf.retryDirect(ctx, client, reqInfo, consumedReqBytes)
+			res.RouteChanged = true
+			return res, err
 		}
+		// Stream-monitor: pipe through proxy but track bytes for future predict.
 		pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
 		sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
 		return SizeForwardResult{PipeResult: pr}, nil

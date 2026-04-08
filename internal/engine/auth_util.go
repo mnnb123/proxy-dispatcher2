@@ -5,8 +5,8 @@ import (
 	"encoding/base64"
 )
 
-// proxyBasicAuth returns a "Basic base64(user:pass)" header value.
-func proxyBasicAuth(user, pass string) string {
+// ProxyBasicAuth returns a "Basic base64(user:pass)" header value.
+func ProxyBasicAuth(user, pass string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
 }
 
@@ -19,7 +19,7 @@ func InjectProxyAuth(raw []byte, user, pass string) []byte {
 	if idx < 0 {
 		return raw
 	}
-	header := []byte("Proxy-Authorization: " + proxyBasicAuth(user, pass) + "\r\n")
+	header := []byte("Proxy-Authorization: " + ProxyBasicAuth(user, pass) + "\r\n")
 	out := make([]byte, 0, len(raw)+len(header))
 	out = append(out, raw[:idx+2]...) // up to and including the \r\n before blank line
 	out = append(out, header...)

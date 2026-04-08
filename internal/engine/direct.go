@@ -44,7 +44,7 @@ func (d *DirectDialer) DialThroughResource(ctx context.Context, addr string, pro
 	case "http":
 		req := "CONNECT " + addr + " HTTP/1.1\r\nHost: " + addr + "\r\n"
 		if proxy.User != "" {
-			req += "Proxy-Authorization: " + proxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
+			req += "Proxy-Authorization: " + ProxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
 		}
 		req += "\r\n"
 		if _, err := conn.Write([]byte(req)); err != nil {

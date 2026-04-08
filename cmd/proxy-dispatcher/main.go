@@ -358,19 +358,42 @@ func main() {
 					return dialErr
 				}
 				if len(reqInfo.ConsumedBytes) > 0 {
-					// HTTPS CONNECT through HTTP proxy: use dedicated handler (injects auth).
-					if proxy.Type == "http" && reqInfo.IsHTTPS {
-						pr, err := httpH.HandleConnection(ctx, engine.WrapPrefixAsBuffered(prefixConn), *proxy)
-						if err != nil {
-							logger.Debug("http session ended", "error", err)
+					if reqInfo.IsHTTPS {
+						// HTTPS CONNECT: establish tunnel through upstream proxy, then let SizeForwarder decide.
+						connectReq := "CONNECT " + reqInfo.Target + " HTTP/1.1\r\nHost: " + reqInfo.Target + "\r\n"
+						if proxy.User != "" {
+							connectReq += "Proxy-Authorization: " + engine.ProxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
 						}
-						finalRes = engine.SizeForwardResult{
-							PipeResult: pr,
+						connectReq += "\r\n"
+						if _, err := proxyConn.Write([]byte(connectReq)); err != nil {
+							proxyConn.Close()
+							return fmt.Errorf("write CONNECT: %w", err)
 						}
-						proxyConn.Close()
+						buf := make([]byte, 4096)
+						n, rErr := proxyConn.Read(buf)
+						if rErr != nil {
+							proxyConn.Close()
+							return fmt.Errorf("read CONNECT response: %w", rErr)
+						}
+						resp := string(buf[:n])
+						if len(resp) < 12 || resp[9:12] != "200" {
+							proxyConn.Close()
+							return fmt.Errorf("upstream CONNECT failed: %s", resp)
+						}
+						// Send 200 to client.
+						if _, err := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+							proxyConn.Close()
+							return fmt.Errorf("write 200: %w", err)
+						}
+						// Now tunnel is established: client <-> proxyConn. Let SizeForwarder handle it.
+						res, sfErr := sizeForwarder.Forward(ctx, buffConn.Conn, proxyConn, reqInfo, nil)
+						if sfErr != nil {
+							return sfErr
+						}
+						finalRes = res
 						return nil
 					}
-					// For other cases: inject Proxy-Authorization into consumed bytes before forwarding.
+					// For plain HTTP: inject Proxy-Authorization into consumed bytes before forwarding.
 					outBytes := reqInfo.ConsumedBytes
 					if proxy.User != "" {
 						outBytes = engine.InjectProxyAuth(reqInfo.ConsumedBytes, proxy.User, proxy.Pass)

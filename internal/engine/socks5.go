@@ -65,7 +65,7 @@ func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAd
 
 	req := "CONNECT " + targetAddr + " HTTP/1.1\r\nHost: " + targetAddr + "\r\n"
 	if proxy.User != "" {
-		req += "Proxy-Authorization: " + proxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
+		req += "Proxy-Authorization: " + ProxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
 	}
 	req += "\r\n"
 

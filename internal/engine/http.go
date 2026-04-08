@@ -79,7 +79,7 @@ func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedCon
 		}
 		req := "CONNECT " + targetHost + " HTTP/1.1\r\nHost: " + targetHost + "\r\n"
 		if proxy.User != "" {
-			req += "Proxy-Authorization: " + proxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
+			req += "Proxy-Authorization: " + ProxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
 		}
 		req += "\r\n"
 		if _, err := proxyConn.Write([]byte(req)); err != nil {
@@ -138,7 +138,7 @@ func (h *HttpHandler) handlePlainHTTP(ctx context.Context, clientConn *BufferedC
 
 	if proxy.User != "" {
 		sb.WriteString("Proxy-Authorization: ")
-		sb.WriteString(proxyBasicAuth(proxy.User, proxy.Pass))
+		sb.WriteString(ProxyBasicAuth(proxy.User, proxy.Pass))
 		sb.WriteString("\r\n")
 	}
 
