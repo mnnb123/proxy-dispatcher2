@@ -428,7 +428,9 @@ document.getElementById('saveForceProxyBtn').addEventListener('click', async () 
   const body = { raw_text: document.getElementById('forceProxyList').value };
   const r = await apiCall('POST', '/api/config/force-proxy', body);
   if (!r.ok) { setMsg('forceProxyMsg', r.data.error || 'Failed', true); return; }
-  setMsg('forceProxyMsg', 'Saved ' + r.data.count + ' rules', false);
+  let msg = 'Saved ' + r.data.count + ' rules';
+  if (r.data.removed_bypass > 0) msg += ' — removed ' + r.data.removed_bypass + ' from Bypass Rules';
+  setMsg('forceProxyMsg', msg, false);
 });
 
 // ── Bandwidth Budget ───────────────────────────────────────

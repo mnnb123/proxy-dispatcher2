@@ -86,6 +86,23 @@ func (s *Server) handlePostForceProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.cfg.ForceProxyDomains = rules
+
+	// Remove force-proxy domains from bypass rules to avoid conflict.
+	forceSet := make(map[string]bool, len(rules))
+	for _, r := range rules {
+		forceSet[strings.ToLower(r.Pattern)] = true
+	}
+	filtered := s.cfg.BypassDomains[:0]
+	removed := 0
+	for _, bd := range s.cfg.BypassDomains {
+		if forceSet[strings.ToLower(bd.Pattern)] {
+			removed++
+			continue
+		}
+		filtered = append(filtered, bd)
+	}
+	s.cfg.BypassDomains = filtered
+
 	if err := s.ruleEngine.Reload(s.cfg); err != nil {
 		respondError(w, http.StatusBadRequest, "rule compile error: "+err.Error())
 		return
@@ -94,5 +111,8 @@ func (s *Server) handlePostForceProxy(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "save failed")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]int{"count": len(rules)})
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"count":           len(rules),
+		"removed_bypass":  removed,
+	})
 }
