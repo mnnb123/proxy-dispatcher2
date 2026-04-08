@@ -84,10 +84,14 @@ func (s *Server) handlePostInput(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-create default group + port mapping.
 	if len(entries) > 0 {
+		mode := s.cfg.RotationMode
+		if mode == "" {
+			mode = "roundrobin"
+		}
 		s.cfg.ProxyGroups = []config.ProxyGroup{{
 			Name:         "default",
 			Proxies:      entries,
-			RotationMode: "roundrobin",
+			RotationMode: mode,
 			StickyTTLSec: 300,
 		}}
 		s.cfg.PortMappings = []config.PortMapping{{
