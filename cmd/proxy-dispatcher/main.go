@@ -148,8 +148,9 @@ func main() {
 		logger.Error("report hub init", "error", err)
 		os.Exit(1)
 	}
-	recordEntry := func(clientIP, domain, portStr string, method, urlPath, proto, routeType, inputProxy, errStr string, status int, bytesSent, bytesRecv, latencyMs int64) {
+	recordEntry := func(listenPort int, clientIP, domain, portStr string, method, urlPath, proto, routeType, inputProxy, errStr string, status int, bytesSent, bytesRecv, latencyMs int64) {
 		e := report.NewLogEntry()
+		e.ListenPort = listenPort
 		e.ClientIP = clientIP
 		e.Domain = domain
 		if portStr != "" {
@@ -220,7 +221,7 @@ func main() {
 				logger.Debug("brute guard banned", "ip", clientIP)
 			}
 			logger.Debug("whitelist rejected", "ip", clientIP, "reason", reason)
-			recordEntry(clientIP, "", "", "", "", "", "blocked", "", "whitelist: "+reason, 403, 0, 0, 0)
+			recordEntry(0, clientIP, "", "", "", "", "", "blocked", "", "whitelist: "+reason, 403, 0, 0, 0)
 			conn.Close()
 			return
 		}
@@ -265,7 +266,7 @@ func main() {
 				logger.Debug("http fallback ended", "error", err)
 			}
 			tracker.Record("unknown", pr.BytesSent+pr.BytesReceived, "proxy")
-			recordEntry(clientIP, "unknown", "", "", "", "http", "proxy", fmt.Sprintf("%s:%d", proxy.Host, proxy.Port), "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+			recordEntry(outputPort, clientIP, "unknown", "", "", "", "http", "proxy", fmt.Sprintf("%s:%d", proxy.Host, proxy.Port), "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 			return
 		}
 
@@ -281,14 +282,14 @@ func main() {
 		case "block":
 			_ = rules.ExecuteBlockAction(prefixConn, action.Block, "http")
 			tracker.Record(reqInfo.Host, 0, "block")
-			recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "blocked", "", "blocked by rule", 403, 0, 0, time.Since(startTime).Milliseconds())
+			recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "blocked", "", "blocked by rule", 403, 0, 0, time.Since(startTime).Milliseconds())
 			return
 
 		case "direct":
 			remoteConn, err := directDialer.Dial(ctx, reqInfo.Target)
 			if err != nil {
 				logger.Debug("direct dial failed", "target", reqInfo.Target, "error", err)
-				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
+				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 				return
 			}
 			if reqInfo.IsHTTPS {
@@ -299,12 +300,12 @@ func main() {
 				}
 				pr := engine.Pipe(ctx, buffConn.Conn, remoteConn, idleTimeout)
 				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 			} else {
 				// Plain HTTP: replay consumed request bytes then pipe.
 				pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
 				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 			}
 			return
 
@@ -314,7 +315,7 @@ func main() {
 				remoteConn, err := directDialer.Dial(ctx, reqInfo.Target)
 				if err != nil {
 					logger.Debug("direct dial failed", "target", reqInfo.Target, "error", err)
-					recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
+					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 					return
 				}
 				if reqInfo.IsHTTPS {
@@ -324,22 +325,22 @@ func main() {
 					}
 					pr := engine.Pipe(ctx, buffConn.Conn, remoteConn, idleTimeout)
 					tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-					recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 				} else {
 					pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
 					tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-					recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 				}
 			} else {
 				remoteConn, err := directDialer.DialThroughResource(ctx, reqInfo.Target, *resProxy)
 				if err != nil {
 					logger.Debug("resource dial failed", "target", reqInfo.Target, "error", err)
-					recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
+					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 					return
 				}
 				pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
 				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "resource")
-				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
+				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 			}
 			return
 
@@ -388,13 +389,13 @@ func main() {
 			})
 			if retryErr != nil {
 				logger.Debug("proxy retry exhausted", "error", retryErr)
-				recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, retryErr.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
+				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, retryErr.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 				return
 			}
 			if !finalRes.RouteChanged {
 				tracker.Record(reqInfo.Host, finalRes.BytesSent+finalRes.BytesReceived, "proxy")
 			}
-			recordEntry(clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, "", 200, finalRes.BytesSent, finalRes.BytesReceived, time.Since(startTime).Milliseconds())
+			recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, "", 200, finalRes.BytesSent, finalRes.BytesReceived, time.Since(startTime).Milliseconds())
 		}
 	}
 

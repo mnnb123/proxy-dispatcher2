@@ -552,7 +552,7 @@ function wsConnect() {
         : route === 'proxy'
         ? '<span style="background:#92400e;color:#fbbf24;padding:2px 6px;border-radius:4px;font-weight:600">PROXY</span>'
         : '<span style="background:#334155;color:#e2e8f0;padding:2px 6px;border-radius:4px">' + (e.route_type||'') + '</span>';
-      tr.innerHTML = '<td>' + ts + '</td><td>' + (e.port||'') + '</td><td>' + (e.client_ip||'') + '</td><td>' + (e.domain||'') + '</td><td>' + (e.method||'') +
+      tr.innerHTML = '<td>' + ts + '</td><td>' + (e.listen_port||'') + '</td><td>' + (e.client_ip||'') + '</td><td>' + (e.domain||'') + '</td><td>' + (e.method||'') +
         '</td><td>' + (e.status_code||'') + '</td><td>' + routeBadge + '</td><td>' + (e.latency_ms||0) + 'ms</td><td>' +
         formatBytes((e.bytes_sent||0)+(e.bytes_recv||0)) + '</td><td style="color:#f87171">' + (e.error||'') + '</td>';
       tbody.insertBefore(tr, tbody.firstChild);

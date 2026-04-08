@@ -20,6 +20,7 @@ type LogEntry struct {
 	ClientIP   string `json:"client_ip"`
 	Domain     string `json:"domain"`
 	Port       int    `json:"port"`
+	ListenPort int    `json:"listen_port"`
 	Method     string `json:"method"`
 	URLPath    string `json:"url_path"`
 	Protocol   string `json:"protocol"`
