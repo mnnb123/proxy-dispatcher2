@@ -134,6 +134,17 @@ func (s *Server) authRequired(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// decodeJSON reads and decodes a JSON request body with a 1 MB limit.
+func decodeJSON(r *http.Request, v interface{}) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20)
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// respondOK sends a standard {"status": "ok"} JSON response.
+func respondOK(w http.ResponseWriter) {
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

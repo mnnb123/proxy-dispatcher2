@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,54 +53,11 @@ func main() {
 		return
 	}
 	if *initCfg {
-		cfg := config.DefaultConfig()
-		if *vpsIP != "" {
-			cfg.VpsIp = *vpsIP
-		}
-		if *ringBuffer > 0 {
-			cfg.Report.RingBufferMaxRows = *ringBuffer
-		}
-		if *clearSec > 0 {
-			cfg.Report.AutoClearSeconds = *clearSec
-		}
-		if err := config.SaveConfig(*configPath, cfg); err != nil {
-			logger.Error("init-config failed", "error", err)
-			os.Exit(1)
-		}
-		fmt.Printf("wrote default config to %s\n", *configPath)
+		handleInitConfig(*configPath, *vpsIP, *ringBuffer, *clearSec, logger)
 		return
 	}
 	if *resetAdmin {
-		cfg, err := config.LoadConfig(*configPath)
-		if err != nil {
-			logger.Error("load config", "error", err)
-			os.Exit(1)
-		}
-		h, _ := auth.HashPassword("admin")
-		cfg.AdminPassHash = h
-		// Phase 6: also reset any admin user in Users slice and disable TOTP.
-		found := false
-		for i := range cfg.Users {
-			if cfg.Users[i].Role == "admin" {
-				cfg.Users[i].PassHash = h
-				cfg.Users[i].TOTPEnabled = false
-				cfg.Users[i].TOTPSecret = ""
-				cfg.Users[i].RecoveryCodes = nil
-				cfg.Users[i].Disabled = false
-				found = true
-			}
-		}
-		if !found {
-			cfg.Users = append(cfg.Users, config.UserAccount{
-				ID: "admin-reset", Username: "admin", PassHash: h,
-				Role: "admin", CreatedAt: time.Now().Unix(),
-			})
-		}
-		if err := config.SaveConfig(*configPath, cfg); err != nil {
-			logger.Error("save config", "error", err)
-			os.Exit(1)
-		}
-		fmt.Println("admin password reset to 'admin' (TOTP disabled)")
+		handleResetAdmin(*configPath, logger)
 		return
 	}
 
@@ -112,63 +67,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Core Phase 1.
+	// --- Initialize all subsystems ---
 	limiter := auth.NewLoginLimiter(5, 15*time.Minute)
 	httpH := engine.NewHttpHandler(logger)
 
-	// Phase 5: group manager.
 	groupMgr, err := engine.NewGroupManager(cfg.ProxyGroups, cfg.PortMappings, logger)
-	if err != nil {
-		logger.Error("group manager init", "error", err)
-		os.Exit(1)
-	}
-
-	// Phase 2: rule engine + direct dialer.
+	exitOnErr(err, "group manager", logger)
 	ruleEngine, err := rules.NewRuleEngine(cfg, logger)
-	if err != nil {
-		logger.Error("rule engine init", "error", err)
-		os.Exit(1)
-	}
+	exitOnErr(err, "rule engine", logger)
 	directDialer := engine.NewDirectDialer(time.Duration(cfg.ConnTimeout)*time.Second, logger)
 	socks5H := engine.NewSocks5Handler(logger, ruleEngine)
 	idleTimeout := time.Duration(cfg.IdleTimeout) * time.Second
 
-	// Phase 3: whitelist, brute guard, bandwidth, budget, size forwarder.
 	whitelistMgr, err := security.NewWhitelistManager(cfg.Whitelist, logger)
-	if err != nil {
-		logger.Error("whitelist init", "error", err)
-		os.Exit(1)
-	}
+	exitOnErr(err, "whitelist", logger)
 	bruteGuard := security.NewBruteGuard(cfg.Whitelist.AutoBan, logger)
 	tracker := bandwidth.NewTracker(logger)
 	budgetCtrl := bandwidth.NewBudgetController(cfg.BandwidthBudget, tracker, logger)
 
-	// Phase 4: reporting.
 	reportHub, err := report.NewReportHub(cfg.Report, logger)
-	if err != nil {
-		logger.Error("report hub init", "error", err)
-		os.Exit(1)
-	}
-	recordEntry := func(listenPort int, clientIP, domain, portStr string, method, urlPath, proto, routeType, inputProxy, errStr string, status int, bytesSent, bytesRecv, latencyMs int64) {
-		e := report.NewLogEntry()
-		e.ListenPort = listenPort
-		e.ClientIP = clientIP
-		e.Domain = domain
-		if portStr != "" {
-			fmt.Sscanf(portStr, "%d", &e.Port)
-		}
-		e.Method = method
-		e.URLPath = urlPath
-		e.Protocol = proto
-		e.StatusCode = status
-		e.RouteType = routeType
-		e.InputProxy = inputProxy
-		e.BytesSent = bytesSent
-		e.BytesRecv = bytesRecv
-		e.LatencyMs = latencyMs
-		e.Error = errStr
-		reportHub.Record(e)
-	}
+	exitOnErr(err, "report hub", logger)
 
 	sizeForwarder := engine.NewSizeForwarder(engine.SizeForwarderDeps{
 		AutoBypassCfg: cfg.AutoBypass,
@@ -180,21 +98,19 @@ func main() {
 		IdleTimeout:   idleTimeout,
 		Logger:        logger,
 	})
+
 	var cfgMu sync.Mutex
 	sizeForwarder.SetOnAutoBypass(func(domain string) {
 		cfgMu.Lock()
 		defer cfgMu.Unlock()
 		cfg.BypassDomains = append(cfg.BypassDomains, config.DomainRule{
-			Pattern: domain,
-			Enabled: true,
-			Note:    "auto-bypass",
+			Pattern: domain, Enabled: true, Note: "auto-bypass",
 		})
 		_ = ruleEngine.Reload(cfg)
 		_ = config.SaveConfig(*configPath, cfg)
 		logger.Info("auto-bypass: added domain to bypass rules", "domain", domain)
 	})
 
-	// Phase 5: health checker, retry, importer.
 	healthChecker := health.NewHealthChecker(cfg.HealthCheck, groupMgr.AllGroupProxies(), logger)
 	healthChecker.OnStatusChange = func(p *config.ProxyEntry, oldS, newS string) {
 		logger.Info("proxy status change", "proxy", fmt.Sprintf("%s:%d", p.Host, p.Port), "from", oldS, "to", newS)
@@ -212,278 +128,132 @@ func main() {
 	urlImporter.Start()
 	defer urlImporter.Stop()
 
-	extractPort := func(addr net.Addr) int {
-		_, portStr, err := net.SplitHostPort(addr.String())
-		if err != nil {
-			return 0
-		}
-		p, _ := strconv.Atoi(portStr)
-		return p
+	// --- Connection handler ---
+	connHandler := &ConnHandler{
+		cfg: cfg, socks5H: socks5H, httpH: httpH, groupMgr: groupMgr,
+		ruleEngine: ruleEngine, directDialer: directDialer,
+		whitelistMgr: whitelistMgr, bruteGuard: bruteGuard,
+		tracker: tracker, sizeForwarder: sizeForwarder,
+		retryHandler: retryHandler, reportHub: reportHub,
+		idleTimeout: idleTimeout, logger: logger,
 	}
 
-	handler := func(conn net.Conn) {
-		startTime := time.Now()
-		clientIP := conn.RemoteAddr().String()
-		if h, _, err := net.SplitHostPort(clientIP); err == nil {
-			clientIP = h
-		}
-		// Phase 3: whitelist check first.
-		allowed, reason := whitelistMgr.IsAllowed(clientIP)
-		if !allowed {
-			banned, _ := bruteGuard.RecordAndCheck(clientIP)
-			if banned {
-				logger.Debug("brute guard banned", "ip", clientIP)
-			}
-			logger.Debug("whitelist rejected", "ip", clientIP, "reason", reason)
-			recordEntry(0, clientIP, "", "", "", "", "", "blocked", "", "whitelist: "+reason, 403, 0, 0, 0)
-			conn.Close()
-			return
-		}
+	lm := engine.NewListenerManager(cfg.MaxConnPerPort, connHandler.Handle, logger)
+	startListeners(cfg, lm, logger)
 
-		outputPort := extractPort(conn.LocalAddr())
-		group, gErr := groupMgr.GetGroupForPort(outputPort)
-		if gErr != nil {
-			logger.Warn("no group for port", "port", outputPort, "error", gErr)
-			return
-		}
+	// --- API / web panel ---
+	userMgr := auth.NewUserManager(cfg.Users, logger)
+	tokenMgr := auth.NewTokenManager(cfg.APITokens, logger)
+	backupMgr := system.NewBackupManager(*configPath, logger)
+	dnsMgr := system.NewDNSManager(cfg.SystemConfig, logger)
+	directDialer.SetResolver(dnsMgr.GetResolver())
 
-		proto, buffConn, err := engine.DetectProtocol(conn)
-		if err != nil || proto == "unknown" {
-			return
-		}
+	reloadAllModules := buildReloader(cfg, ruleEngine, groupMgr, whitelistMgr, healthChecker, budgetCtrl, dnsMgr, directDialer, lm, logger)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	syncMaster, syncSlave := setupSync(cfg, configPath, reloadAllModules, logger)
 
-		if proto == "socks5" {
-			proxy, err := group.Rotator.Next(clientIP)
-			if err != nil {
-				logger.Warn("no proxy available", "group", group.Name)
-				recordEntry(outputPort, clientIP, "", "", "", "", "socks5", "proxy", "", "no proxy available", 502, 0, 0, 0)
-				return
-			}
-			proxyAddr := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
-			sResult, sErr := socks5H.HandleConnection(ctx, buffConn, *proxy, group.Rotator, clientIP)
-			lat := time.Since(startTime).Milliseconds()
-			destHost := ""
-			destPort := ""
-			var bytesSent, bytesRecv int64
-			if sResult != nil {
-				destHost = sResult.DestHost
-				destPort = sResult.DestPort
-				bytesSent = sResult.BytesSent
-				bytesRecv = sResult.BytesRecv
-				if sResult.ProxyUsed != "" {
-					proxyAddr = sResult.ProxyUsed
-				}
-			}
-
-			// Feed bytes into bandwidth tracker and auto-bypass.
-			totalBytes := bytesSent + bytesRecv
-			routeType := "proxy"
-			if sResult != nil && sResult.RouteType != "" {
-				routeType = sResult.RouteType
-			}
-			if destHost != "" {
-				if totalBytes > 0 {
-					tracker.Record(destHost, totalBytes, routeType)
-				}
-				if routeType == "proxy" {
-					sizeForwarder.CheckAutoBypass(destHost, outputPort, totalBytes)
-				}
-			}
-
-			inputProxy := proxyAddr
-			if routeType == "direct" {
-				inputProxy = ""
-			}
-			if sErr != nil {
-				errStr := sErr.Error()
-				// broken pipe / connection reset = normal tunnel close, not an error.
-				if strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "use of closed") {
-					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", routeType, inputProxy, "", 200, bytesSent, bytesRecv, lat)
-				} else if strings.Contains(errStr, "blocked by rule") {
-					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", "blocked", "", "blocked by rule", 403, 0, 0, lat)
-				} else {
-					logger.Debug("socks5 session error", "error", sErr)
-					recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", routeType, inputProxy, errStr, 502, bytesSent, bytesRecv, lat)
-				}
-			} else {
-				recordEntry(outputPort, clientIP, destHost, destPort, "CONNECT", "", "socks5", routeType, inputProxy, "", 200, bytesSent, bytesRecv, lat)
-			}
-			return
-		}
-
-		// HTTP path: extract target for rule evaluation.
-		reqInfo, extractErr := engine.ExtractHTTPTarget(buffConn)
-		if extractErr != nil {
-			proxy, err := group.Rotator.Next(clientIP)
-			if err != nil {
-				logger.Warn("no proxy available", "group", group.Name)
-				recordEntry(outputPort, clientIP, "unknown", "", "", "", "http", "proxy", "", "no proxy available", 502, 0, 0, 0)
-				return
-			}
-			pr, err := httpH.HandleConnection(ctx, buffConn, *proxy)
-			if err != nil {
-				logger.Debug("http fallback ended", "error", err)
-			}
-			tracker.Record("unknown", pr.BytesSent+pr.BytesReceived, "proxy")
-			recordEntry(outputPort, clientIP, "unknown", "", "", "", "http", "proxy", fmt.Sprintf("%s:%d", proxy.Host, proxy.Port), "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
-			return
-		}
-
-		prefixConn := engine.NewPrefixConn(reqInfo.ConsumedBytes, buffConn)
-		action := ruleEngine.Evaluate(reqInfo.Host, reqInfo.UrlPath)
-
-		proto4 := "http"
-		if reqInfo.IsHTTPS {
-			proto4 = "https"
-		}
-
-		switch action.Type {
-		case "block":
-			_ = rules.ExecuteBlockAction(prefixConn, action.Block, "http")
-			tracker.Record(reqInfo.Host, 0, "block")
-			recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "blocked", "", "blocked by rule", 403, 0, 0, time.Since(startTime).Milliseconds())
-			return
-
-		case "direct":
-			remoteConn, err := directDialer.Dial(ctx, reqInfo.Target)
-			if err != nil {
-				logger.Debug("direct dial failed", "target", reqInfo.Target, "error", err)
-				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
-				return
-			}
-			if reqInfo.IsHTTPS {
-				// CONNECT tunnel: send 200 to client, pipe raw bytes (no CONNECT headers to remote).
-				if _, werr := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); werr != nil {
-					remoteConn.Close()
-					return
-				}
-				pr := engine.Pipe(ctx, buffConn.Conn, remoteConn, idleTimeout)
-				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
-			} else {
-				// Plain HTTP: replay consumed request bytes then pipe.
-				pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
-				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
-			}
-			return
-
-		case "resource":
-			resProxy := rules.ResolveBypassTarget(action.Type, cfg.ResourceProxy)
-			if resProxy == nil {
-				remoteConn, err := directDialer.Dial(ctx, reqInfo.Target)
-				if err != nil {
-					logger.Debug("direct dial failed", "target", reqInfo.Target, "error", err)
-					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
-					return
-				}
-				if reqInfo.IsHTTPS {
-					if _, werr := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); werr != nil {
-						remoteConn.Close()
-						return
-					}
-					pr := engine.Pipe(ctx, buffConn.Conn, remoteConn, idleTimeout)
-					tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
-				} else {
-					pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
-					tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "direct")
-					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "direct", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
-				}
-			} else {
-				remoteConn, err := directDialer.DialThroughResource(ctx, reqInfo.Target, *resProxy)
-				if err != nil {
-					logger.Debug("resource dial failed", "target", reqInfo.Target, "error", err)
-					recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
-					return
-				}
-				pr := engine.Pipe(ctx, prefixConn, remoteConn, idleTimeout)
-				tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "resource")
-				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
-			}
-			return
-
-		default: // "proxy"
-			var finalRes engine.SizeForwardResult
-			var finalProxyAddr string
-			_, retryErr := retryHandler.WithRetry(ctx, group.Rotator, clientIP, func(proxy *config.ProxyEntry) error {
-				group.Rotator.IncrementConn(proxy)
-				defer group.Rotator.DecrementConn(proxy)
-				proxyAddr := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
-				finalProxyAddr = proxyAddr
-				proxyConn, dialErr := net.DialTimeout("tcp", proxyAddr, time.Duration(cfg.ConnTimeout)*time.Second)
-				if dialErr != nil {
-					logger.Debug("proxy dial failed", "target", proxyAddr, "error", dialErr)
-					return dialErr
-				}
-				if len(reqInfo.ConsumedBytes) > 0 {
-					if reqInfo.IsHTTPS {
-						// HTTPS CONNECT: establish tunnel through upstream proxy, then let SizeForwarder decide.
-						connectReq := "CONNECT " + reqInfo.Target + " HTTP/1.1\r\nHost: " + reqInfo.Target + "\r\n"
-						if proxy.User != "" {
-							connectReq += "Proxy-Authorization: " + engine.ProxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
-						}
-						connectReq += "\r\n"
-						if _, err := proxyConn.Write([]byte(connectReq)); err != nil {
-							proxyConn.Close()
-							return fmt.Errorf("write CONNECT: %w", err)
-						}
-						buf := make([]byte, 4096)
-						n, rErr := proxyConn.Read(buf)
-						if rErr != nil {
-							proxyConn.Close()
-							return fmt.Errorf("read CONNECT response: %w", rErr)
-						}
-						resp := string(buf[:n])
-						if len(resp) < 12 || resp[9:12] != "200" {
-							proxyConn.Close()
-							return fmt.Errorf("upstream CONNECT failed: %s", resp)
-						}
-						// Send 200 to client.
-						if _, err := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-							proxyConn.Close()
-							return fmt.Errorf("write 200: %w", err)
-						}
-						// Now tunnel is established: client <-> proxyConn. Let SizeForwarder handle it.
-						res, sfErr := sizeForwarder.Forward(ctx, buffConn.Conn, proxyConn, reqInfo, nil, outputPort)
-						if sfErr != nil {
-							return sfErr
-						}
-						finalRes = res
-						return nil
-					}
-					// For plain HTTP: inject Proxy-Authorization into consumed bytes before forwarding.
-					outBytes := reqInfo.ConsumedBytes
-					if proxy.User != "" {
-						outBytes = engine.InjectProxyAuth(reqInfo.ConsumedBytes, proxy.User, proxy.Pass)
-					}
-					if _, err := proxyConn.Write(outBytes); err != nil {
-						proxyConn.Close()
-						return err
-					}
-				}
-				res, sfErr := sizeForwarder.Forward(ctx, prefixConn, proxyConn, reqInfo, reqInfo.ConsumedBytes, outputPort)
-				if sfErr != nil {
-					return sfErr
-				}
-				finalRes = res
-				return nil
-			})
-			if retryErr != nil {
-				logger.Debug("proxy retry exhausted", "error", retryErr)
-				recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, retryErr.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
-				return
-			}
-			recordEntry(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, "", 200, finalRes.BytesSent, finalRes.BytesReceived, time.Since(startTime).Milliseconds())
+	onConfigSave := func() {
+		backupMgr.AutoBackup()
+		if syncMaster != nil && cfg.SyncConfig.AutoSync {
+			go syncMaster.PushToAll()
 		}
 	}
 
-	lm := engine.NewListenerManager(cfg.MaxConnPerPort, handler, logger)
-	// Listen to every port defined in PortMappings. If no mappings exist,
-	// fall back to the legacy single-range config.
+	apiServer := api.NewServerWithDeps(api.ServerDeps{
+		Cfg: cfg, CfgPath: *configPath, Rotator: nil, Limiter: limiter,
+		RuleEngine: ruleEngine, WhitelistMgr: whitelistMgr, BruteGuard: bruteGuard,
+		Tracker: tracker, BudgetCtrl: budgetCtrl, SizeForwarder: sizeForwarder,
+		ListenerMg: lm, ReportHub: reportHub, GroupMgr: groupMgr,
+		HealthChecker: healthChecker, Importer: urlImporter,
+		UserMgr: userMgr, TokenMgr: tokenMgr,
+		SyncMaster: syncMaster, SyncSlave: syncSlave,
+		BackupMgr: backupMgr, DNSMgr: dnsMgr, Version: Version,
+		OnConfigReload: reloadAllModules, OnConfigSave: onConfigSave,
+		Logger: logger,
+	})
+
+	httpSrv := startWebPanel(cfg, apiServer, userMgr, tokenMgr, logger)
+
+	// --- Background maintenance ---
+	startBackgroundTasks(limiter, whitelistMgr, bruteGuard, tracker, reportHub, groupMgr, tokenMgr, logger)
+
+	// --- Graceful shutdown ---
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	logger.Info("shutting down")
+
+	_ = lm.Stop()
+	reportHub.Close()
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutCancel()
+	_ = httpSrv.Shutdown(shutCtx)
+	logger.Info("bye")
+}
+
+// --- CLI subcommands ---
+
+func handleInitConfig(path, vpsIP string, ringBuffer, clearSec int, logger *slog.Logger) {
+	cfg := config.DefaultConfig()
+	if vpsIP != "" {
+		cfg.VpsIp = vpsIP
+	}
+	if ringBuffer > 0 {
+		cfg.Report.RingBufferMaxRows = ringBuffer
+	}
+	if clearSec > 0 {
+		cfg.Report.AutoClearSeconds = clearSec
+	}
+	if err := config.SaveConfig(path, cfg); err != nil {
+		logger.Error("init-config failed", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote default config to %s\n", path)
+}
+
+func handleResetAdmin(path string, logger *slog.Logger) {
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		logger.Error("load config", "error", err)
+		os.Exit(1)
+	}
+	passHash, _ := auth.HashPassword("admin")
+	cfg.AdminPassHash = passHash
+
+	found := false
+	for i := range cfg.Users {
+		if cfg.Users[i].Role == "admin" {
+			cfg.Users[i].PassHash = passHash
+			cfg.Users[i].TOTPEnabled = false
+			cfg.Users[i].TOTPSecret = ""
+			cfg.Users[i].RecoveryCodes = nil
+			cfg.Users[i].Disabled = false
+			found = true
+		}
+	}
+	if !found {
+		cfg.Users = append(cfg.Users, config.UserAccount{
+			ID: "admin-reset", Username: "admin", PassHash: passHash,
+			Role: "admin", CreatedAt: time.Now().Unix(),
+		})
+	}
+	if err := config.SaveConfig(path, cfg); err != nil {
+		logger.Error("save config", "error", err)
+		os.Exit(1)
+	}
+	fmt.Println("admin password reset to 'admin' (TOTP disabled)")
+}
+
+// --- Setup helpers ---
+
+func exitOnErr(err error, name string, logger *slog.Logger) {
+	if err != nil {
+		logger.Error(name+" init failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func startListeners(cfg *config.AppConfig, lm *engine.ListenerManager, logger *slog.Logger) {
 	if len(cfg.PortMappings) > 0 {
 		for _, m := range cfg.PortMappings {
 			count := m.PortEnd - m.PortStart + 1
@@ -504,15 +274,10 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
 
-	// Phase 6: auth, sync, backup, DNS, system info.
-	userMgr := auth.NewUserManager(cfg.Users, logger)
-	tokenMgr := auth.NewTokenManager(cfg.APITokens, logger)
-	backupMgr := system.NewBackupManager(*configPath, logger)
-	dnsMgr := system.NewDNSManager(cfg.SystemConfig, logger)
-	directDialer.SetResolver(dnsMgr.GetResolver())
-
-	reloadAllModules := func() error {
+func buildReloader(cfg *config.AppConfig, ruleEngine *rules.RuleEngine, groupMgr *engine.GroupManager, whitelistMgr *security.WhitelistManager, healthChecker *health.HealthChecker, budgetCtrl *bandwidth.BudgetController, dnsMgr *system.DNSManager, directDialer *engine.DirectDialer, lm *engine.ListenerManager, logger *slog.Logger) func() error {
+	return func() error {
 		if err := ruleEngine.Reload(cfg); err != nil {
 			return err
 		}
@@ -527,7 +292,6 @@ func main() {
 		dnsMgr.Reload(cfg.SystemConfig)
 		directDialer.SetResolver(dnsMgr.GetResolver())
 
-		// Restart listeners to match new port mappings.
 		if len(cfg.PortMappings) > 0 {
 			for _, m := range cfg.PortMappings {
 				count := m.PortEnd - m.PortStart + 1
@@ -544,19 +308,18 @@ func main() {
 		}
 		return nil
 	}
+}
 
-	var syncMaster *syncmgr.SyncMaster
-	var syncSlave *syncmgr.SyncSlave
+func setupSync(cfg *config.AppConfig, configPath *string, reloadAll func() error, logger *slog.Logger) (*syncmgr.SyncMaster, *syncmgr.SyncSlave) {
 	switch cfg.SyncConfig.Role {
 	case "master":
-		syncMaster = syncmgr.NewSyncMaster(cfg.SyncConfig, func() *config.AppConfig { return cfg }, logger)
+		sm := syncmgr.NewSyncMaster(cfg.SyncConfig, func() *config.AppConfig { return cfg }, logger)
 		if cfg.SyncConfig.AutoSync {
-			syncMaster.StartAutoSync()
-			defer syncMaster.Stop()
+			sm.StartAutoSync()
 		}
+		return sm, nil
 	case "slave":
 		onReceive := func(incoming *config.AppConfig) error {
-			// Preserve local auth/sync state; merge dispatch config only.
 			cfg.ProxyGroups = incoming.ProxyGroups
 			cfg.PortMappings = incoming.PortMappings
 			cfg.BypassDomains = incoming.BypassDomains
@@ -574,43 +337,21 @@ func main() {
 			if err := config.SaveConfig(*configPath, cfg); err != nil {
 				return err
 			}
-			return reloadAllModules()
+			return reloadAll()
 		}
-		syncSlave = syncmgr.NewSyncSlave(cfg.SyncConfig, onReceive, logger)
+		return nil, syncmgr.NewSyncSlave(cfg.SyncConfig, onReceive, logger)
 	}
+	return nil, nil
+}
 
-	onConfigSave := func() {
-		backupMgr.AutoBackup()
-		if syncMaster != nil && cfg.SyncConfig.AutoSync {
-			go syncMaster.PushToAll()
-		}
-	}
-
-	apiServer := api.NewServerWithDeps(api.ServerDeps{
-		Cfg: cfg, CfgPath: *configPath, Rotator: nil, Limiter: limiter,
-		RuleEngine: ruleEngine, WhitelistMgr: whitelistMgr, BruteGuard: bruteGuard,
-		Tracker: tracker, BudgetCtrl: budgetCtrl, SizeForwarder: sizeForwarder, ListenerMg: lm,
-		ReportHub: reportHub, GroupMgr: groupMgr, HealthChecker: healthChecker,
-		Importer:       urlImporter,
-		UserMgr:        userMgr,
-		TokenMgr:       tokenMgr,
-		SyncMaster:     syncMaster,
-		SyncSlave:      syncSlave,
-		BackupMgr:      backupMgr,
-		DNSMgr:         dnsMgr,
-		Version:        Version,
-		OnConfigReload: reloadAllModules,
-		OnConfigSave:   onConfigSave,
-		Logger:         logger,
-	})
-
+func startWebPanel(cfg *config.AppConfig, apiServer *api.Server, userMgr *auth.UserManager, tokenMgr *auth.TokenManager, logger *slog.Logger) *http.Server {
 	authMW := api.AuthMiddleware(userMgr, tokenMgr, cfg.JwtSecret)
 	mux := http.NewServeMux()
 	mux.Handle("/api/", authMW(apiServer))
 	mux.Handle("/ws/", apiServer)
 	mux.Handle("/", staticHandler(webui.Files))
 
-	httpSrv := &http.Server{
+	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.WebPanelPort),
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
@@ -618,68 +359,11 @@ func main() {
 	}
 	go func() {
 		logger.Info("web panel listening", "port", cfg.WebPanelPort)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("http server", "error", err)
 		}
 	}()
-
-	// Background tickers.
-	go func() {
-		loginCleanup := time.NewTicker(10 * time.Minute)
-		minutely := time.NewTicker(1 * time.Minute)
-		fiveMin := time.NewTicker(5 * time.Minute)
-		hourly := time.NewTicker(1 * time.Hour)
-		daily := time.NewTicker(24 * time.Hour)
-		defer loginCleanup.Stop()
-		defer minutely.Stop()
-		defer fiveMin.Stop()
-		defer hourly.Stop()
-		defer daily.Stop()
-
-		lastDay := time.Now().Format("2006-01-02")
-		for {
-			select {
-			case <-loginCleanup.C:
-				limiter.Cleanup()
-			case <-minutely.C:
-				whitelistMgr.CleanupExpired()
-				reportHub.Agg.CleanupOld()
-				// Phase 5: sticky session cleanup.
-				for _, g := range groupMgr.AllGroups() {
-					if sr, ok := g.Rotator.(*engine.StickyRotator); ok {
-						sr.CleanupExpired()
-					}
-				}
-				today := time.Now().Format("2006-01-02")
-				if today != lastDay {
-					tracker.ResetDaily()
-					lastDay = today
-					logger.Info("daily reset completed")
-				}
-			case <-fiveMin.C:
-				bruteGuard.Cleanup()
-			case <-hourly.C:
-				tracker.ResetHourly()
-				tracker.Cleanup()
-				reportHub.Agg.RollupMinuteToHour()
-			case <-daily.C:
-				reportHub.Agg.RollupHourToDay()
-				tokenMgr.Cleanup()
-			}
-		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	logger.Info("shutting down")
-
-	_ = lm.Stop()
-	reportHub.Close()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutCancel()
-	_ = httpSrv.Shutdown(shutCtx)
-	logger.Info("bye")
+	return srv
 }
 
 func staticHandler(webFS fs.FS) http.Handler {

@@ -63,8 +63,16 @@ func SaveConfig(path string, cfg *AppConfig) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	// Atomic write: write to temp file then rename to prevent corruption.
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		// Rename may fail on some OS (Windows cross-device). Fall back to direct write.
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return fmt.Errorf("write config fallback: %w", err)
+		}
 	}
 	return nil
 }
