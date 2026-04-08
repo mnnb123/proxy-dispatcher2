@@ -1,6 +1,115 @@
 let authToken = sessionStorage.getItem('pd_token');
 if (!authToken) window.location.href = 'login.html';
 
+// ── Dark Mode ─────────────────────────────────────────────
+(function initTheme() {
+  const saved = localStorage.getItem('pd_theme');
+  if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+
+function toggleTheme() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const next = isDark ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('pd_theme', next);
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.textContent = next === 'dark' ? '\u263E' : '\u2600';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('themeToggle');
+  if (btn) {
+    btn.textContent = document.documentElement.getAttribute('data-theme') === 'dark' ? '\u263E' : '\u2600';
+    btn.addEventListener('click', toggleTheme);
+  }
+});
+
+// ── Toast Notifications ───────────────────────────────────
+const Toast = {
+  _icons: { success: '\u2713', error: '\u2717', warning: '\u26A0', info: '\u2139' },
+  show(type, title, message, duration) {
+    duration = duration || 4000;
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+    const el = document.createElement('div');
+    el.className = 'toast toast-' + type;
+    el.innerHTML =
+      '<span class="toast-icon">' + (this._icons[type] || '') + '</span>' +
+      '<div class="toast-body">' +
+        '<div class="toast-title">' + title + '</div>' +
+        (message ? '<div class="toast-message">' + message + '</div>' : '') +
+      '</div>' +
+      '<button class="toast-close" aria-label="Close">\u00D7</button>';
+    el.querySelector('.toast-close').addEventListener('click', () => this._remove(el));
+    container.appendChild(el);
+    setTimeout(() => this._remove(el), duration);
+  },
+  _remove(el) {
+    if (!el || !el.parentNode) return;
+    el.classList.add('removing');
+    setTimeout(() => el.remove(), 200);
+  },
+  success(title, msg) { this.show('success', title, msg); },
+  error(title, msg) { this.show('error', title, msg, 6000); },
+  warning(title, msg) { this.show('warning', title, msg, 5000); },
+  info(title, msg) { this.show('info', title, msg); }
+};
+
+// ── Sidebar Navigation ───────────────────────────────────
+function initSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  const hamburger = document.getElementById('hamburgerBtn');
+
+  // Hamburger toggle
+  if (hamburger) {
+    hamburger.addEventListener('click', () => {
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('active');
+    });
+  }
+  // Close on overlay click
+  if (overlay) {
+    overlay.addEventListener('click', () => {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('active');
+    });
+  }
+
+  // Nav item clicks → switch tabs
+  document.querySelectorAll('.nav-item[data-tab]').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+      item.classList.add('active');
+      const tab = document.getElementById(item.dataset.tab);
+      if (tab) tab.style.display = 'block';
+      // Close sidebar on mobile
+      sidebar.classList.remove('open');
+      if (overlay) overlay.classList.remove('active');
+    });
+  });
+}
+
+// ── Skeleton helpers ──────────────────────────────────────
+function hideSkeleton(skeletonId, dataId) {
+  const sk = document.getElementById(skeletonId);
+  const dt = document.getElementById(dataId);
+  if (sk) sk.style.display = 'none';
+  if (dt) dt.style.display = '';
+}
+
+// ── Staggered animation ──────────────────────────────────
+function animateList(container) {
+  const items = container.querySelectorAll('tr, .stat-card, .card');
+  items.forEach((el, i) => {
+    el.classList.add('animate-in');
+    el.style.animationDelay = (i * 30) + 'ms';
+  });
+}
+
 // ── API helper ─────────────────────────────────────────────
 async function apiCall(method, path, body) {
   const opts = { method, headers: { 'Authorization': 'Bearer ' + authToken } };
@@ -21,11 +130,15 @@ async function apiCall(method, path, body) {
 
 function setMsg(id, text, isError) {
   const el = document.getElementById(id);
+  if (!el) return;
   el.textContent = text;
   el.className = 'msg ' + (isError ? 'err' : 'ok');
+  // Also show toast for important messages
+  if (isError && text) Toast.error('Error', text);
+  else if (!isError && text) Toast.success('Success', text);
 }
 
-// ── Tab switching ──────────────────────────────────────────
+// ── Tab switching (legacy compat — sidebar handles this now) ─
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -34,6 +147,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById(btn.dataset.tab).style.display = 'block';
   });
 });
+
+// Initialize sidebar
+initSidebar();
 
 // ── Load all config ────────────────────────────────────────
 async function loadConfig() {
@@ -71,7 +187,7 @@ function renderMappingTable(mapping) {
   const tbody = document.getElementById('mappingTableBody');
   const countEl = document.getElementById('proxyCount');
   if (!mapping || mapping.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#94a3b8">Chua co proxy nao. Nhap proxy vao o tren va nhan Save & Apply.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center" class="text-muted">Chua co proxy nao. Nhap proxy vao o tren va nhan Save & Apply.</td></tr>';
     countEl.textContent = '';
     return;
   }
@@ -309,12 +425,12 @@ async function loadWhitelist() {
 
 function renderWhitelistTable(entries) {
   const c = document.getElementById('wlTable');
-  if (!entries.length) { c.innerHTML = '<p style="color:#8a8ab0;font-size:13px">No entries</p>'; return; }
+  if (!entries.length) { c.innerHTML = '<p style="color:var(--text-muted);font-size:13px">No entries</p>'; return; }
   let html = '<table class="mini-table"><tr><th>IP</th><th>Type</th><th>Note</th><th>Expires</th><th></th></tr>';
   entries.forEach(e => {
     const exp = e.expires_at ? new Date(e.expires_at * 1000).toLocaleString() : 'Never';
     html += '<tr><td>' + e.ip + '</td><td>' + (e.type||'single') + '</td><td>' + (e.note||'') + '</td><td>' + exp + '</td>';
-    html += '<td><button class="btn btn-xs" style="background:#dc2626;color:white" onclick="removeWhitelistIP(\'' + e.ip + '\')">X</button></td></tr>';
+    html += '<td><button class="btn btn-xs" class="btn-danger" onclick="removeWhitelistIP(\'' + e.ip + '\')">X</button></td></tr>';
   });
   html += '</table>';
   c.innerHTML = html;
@@ -410,12 +526,12 @@ async function refreshAbpStats() {
   const events = (r.data.events || []).reverse();
   events.forEach(ev => {
     const tr = document.createElement('tr');
-    tr.style.color = '#4ade80';
+    tr.style.color = 'var(--color-success)';
     const ts = new Date(ev.time).toLocaleTimeString();
     tr.innerHTML = '<td>' + ts + '</td><td>' + (ev.port||'') + '</td><td style="font-weight:600">' + ev.domain +
       '</td><td>' + formatBytes(ev.size) + '</td><td>' + formatBytes(ev.threshold) +
-      '</td><td><span style="background:#166534;color:#4ade80;padding:2px 8px;border-radius:4px;font-weight:600">BYPASSED</span></td>' +
-      '<td><button class="btn btn-sm" style="background:#f59e0b;color:#000;padding:2px 6px;font-size:11px" onclick="addToForceProxy(\'' +
+      '</td><td><span style="background:var(--color-success-light);color:var(--color-success);padding:2px 8px;border-radius:4px;font-weight:600">BYPASSED</span></td>' +
+      '<td><button class="btn btn-sm" style="background:var(--color-warning);color:var(--text-inverse);padding:2px 6px;font-size:11px" onclick="addToForceProxy(\'' +
       ev.domain.replace(/'/g, "\\'") + '\')">→ Force Proxy</button></td>';
     tbody.appendChild(tr);
   });
@@ -516,7 +632,7 @@ function drawPieChart(proxy, direct, blocked) {
     { val: blocked * 100, color: '#dc2626', label: 'Blocked' },
   ].filter(s => s.val > 0);
 
-  let html = '<circle cx="18" cy="18" r="15.915" fill="none" stroke="#0f1024" stroke-width="3.8"></circle>';
+  let html = '<circle cx="18" cy="18" r="15.915" fill="none" stroke="var(--bg-inset)" stroke-width="3.8"></circle>';
   let offset = 25;
   const legend = [];
   slices.forEach(s => {
@@ -531,11 +647,11 @@ function drawPieChart(proxy, direct, blocked) {
 
 function renderTopDomains(domains) {
   const c = document.getElementById('topDomainsTable');
-  if (!domains.length) { c.innerHTML = '<p style="color:#8a8ab0;font-size:13px">No data yet</p>'; return; }
+  if (!domains.length) { c.innerHTML = '<p style="color:var(--text-muted);font-size:13px">No data yet</p>'; return; }
   let html = '<table class="mini-table"><tr><th>Domain</th><th>Route</th><th>Bytes</th><th>Requests</th><th>Avg Size</th></tr>';
   domains.forEach(d => {
     const rt = d.route_type || 'proxy';
-    const color = rt === 'direct' ? '#4ade80' : rt === 'mixed' ? '#fbbf24' : '#818cf8';
+    const color = rt === 'direct' ? 'var(--color-success)' : rt === 'mixed' ? 'var(--color-warning)' : 'var(--color-accent)';
     const badge = '<span style="color:' + color + ';font-weight:600">' + rt.toUpperCase() + '</span>';
     html += '<tr><td>' + d.domain + '</td><td>' + badge + '</td><td>' + formatBytes(d.bytes_total) + '</td><td>' + d.request_count + '</td><td>' + formatBytes(d.avg_size) + '</td></tr>';
   });
@@ -574,8 +690,8 @@ function wsConnect() {
   if (liveWS && liveWS.readyState <= 1) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   liveWS = new WebSocket(proto + '//' + location.host + '/ws/live-traffic?token=' + authToken);
-  liveWS.onopen = () => { document.getElementById('wsStatus').textContent = 'connected'; document.getElementById('wsStatus').style.color = '#4ade80'; };
-  liveWS.onclose = () => { document.getElementById('wsStatus').textContent = 'disconnected'; document.getElementById('wsStatus').style.color = '#f87171'; };
+  liveWS.onopen = () => { document.getElementById('wsStatus').textContent = 'connected'; document.getElementById('wsStatus').style.color = 'var(--color-success)'; };
+  liveWS.onclose = () => { document.getElementById('wsStatus').textContent = 'disconnected'; document.getElementById('wsStatus').style.color = 'var(--color-danger)'; };
   liveTrafficRows = {};
   liveWS.onmessage = (evt) => {
     try {
@@ -608,16 +724,16 @@ function wsConnect() {
       // New row.
       const tr = document.createElement('tr');
       const ts = new Date(e.timestamp).toLocaleTimeString();
-      const rowColor = route === 'direct' ? '#4ade80' : route === 'proxy' ? '#f59e0b' : '#e2e8f0';
+      const rowColor = route === 'direct' ? 'var(--color-success)' : route === 'proxy' ? 'var(--color-warning)' : 'var(--text-primary)';
       tr.style.color = rowColor;
       const routeBadge = route === 'direct'
-        ? '<span style="background:#166534;color:#4ade80;padding:2px 6px;border-radius:4px;font-weight:600">DIRECT</span>'
+        ? '<span style="background:var(--color-success-light);color:var(--color-success);padding:2px 6px;border-radius:4px;font-weight:600">DIRECT</span>'
         : route === 'proxy'
-        ? '<span style="background:#92400e;color:#fbbf24;padding:2px 6px;border-radius:4px;font-weight:600">PROXY</span>'
-        : '<span style="background:#334155;color:#e2e8f0;padding:2px 6px;border-radius:4px">' + (e.route_type||'') + '</span>';
+        ? '<span style="background:var(--color-warning-light);color:var(--color-warning);padding:2px 6px;border-radius:4px;font-weight:600">PROXY</span>'
+        : '<span style="background:var(--bg-inset);color:var(--text-primary);padding:2px 6px;border-radius:4px">' + (e.route_type||'') + '</span>';
       tr.innerHTML = '<td class="lt-time">' + ts + '</td><td>' + port + '</td><td>' + (e.client_ip||'') + '</td><td>' + domain + '</td><td>' + (e.method||'') +
         '</td><td>' + (e.status_code||'') + '</td><td>' + routeBadge + '</td><td class="lt-hits">1</td><td class="lt-latency">' + (e.latency_ms||0) + 'ms</td><td class="lt-bytes">' +
-        formatBytes(bytes) + '</td><td class="lt-error" style="color:#f87171">' + (e.error||'') + '</td>';
+        formatBytes(bytes) + '</td><td class="lt-error" style="color:var(--color-danger)">' + (e.error||'') + '</td>';
       tbody.insertBefore(tr, tbody.firstChild);
       liveTrafficRows[key] = { tr, hits: 1, bytes, latency: e.latency_ms||0, ts, error: e.error||'' };
       while (tbody.children.length > 200) {
@@ -695,7 +811,7 @@ async function loadReportTopDomains() {
   if (!r.ok) return;
   const c = document.getElementById('reportTopDomains');
   const ranks = r.data || [];
-  if (!ranks.length) { c.innerHTML = '<p style="color:#8a8ab0;font-size:13px">No data</p>'; return; }
+  if (!ranks.length) { c.innerHTML = '<p style="color:var(--text-muted);font-size:13px">No data</p>'; return; }
   let html = '<table class="mini-table"><tr><th>Domain</th><th>Bytes</th><th>Requests</th><th>Errors</th><th>Avg Latency</th></tr>';
   ranks.forEach(d => {
     html += '<tr><td>' + d.domain + '</td><td>' + formatBytes(d.total_bytes) + '</td><td>' + d.request_count +
@@ -726,11 +842,11 @@ async function loadAlerts() {
   if (!r.ok) return;
   const c = document.getElementById('alertsList');
   const alerts = r.data || [];
-  if (!alerts.length) { c.innerHTML = '<p style="color:#8a8ab0">No alerts</p>'; return; }
+  if (!alerts.length) { c.innerHTML = '<p class="text-muted">No alerts</p>'; return; }
   let html = '';
   alerts.reverse().forEach(a => {
     const ts = new Date(a.timestamp).toLocaleString();
-    const color = a.level === 'error' ? '#f87171' : '#fbbf24';
+    const color = a.level === 'error' ? 'var(--color-danger)' : 'var(--color-warning)';
     html += '<div style="border-left:3px solid ' + color + ';padding:4px 8px;margin-bottom:4px">' +
       '<span style="color:' + color + '">[' + a.level + ']</span> ' + ts + ' — ' + a.message + '</div>';
   });
@@ -767,6 +883,7 @@ let dashInterval = null;
 async function loadHealthStatus() {
   const r = await apiCall('GET', '/api/health/status');
   if (!r.ok) return;
+  hideSkeleton('healthSkeleton', 'healthData');
   const groups = r.data.groups || [];
   let total = 0, alive = 0, slow = 0, dead = 0, totalLat = 0, latCount = 0;
   groups.forEach(g => {
@@ -785,17 +902,16 @@ async function loadHealthStatus() {
   document.getElementById('dbAvgLat').textContent = latCount ? Math.round(totalLat/latCount) + 'ms' : '—';
 
   const container = document.getElementById('healthGroupsContainer');
-  if (!groups.length) { container.innerHTML = '<p style="color:#8a8ab0">No groups configured</p>'; return; }
+  if (!groups.length) { container.innerHTML = '<p class="text-muted">No groups configured</p>'; return; }
   let html = '';
   groups.forEach(g => {
     html += '<div style="margin-bottom:16px">';
-    html += '<h3 style="font-size:14px;color:#a78bfa;margin-bottom:6px">' + g.name + ' (' + g.alive + '/' + (g.proxies||[]).length + ' alive)</h3>';
+    html += '<h3 style="margin-bottom:6px">' + g.name + ' (' + g.alive + '/' + (g.proxies||[]).length + ' alive)</h3>';
     html += '<table class="mini-table"><tr><th>Host</th><th>Status</th><th>Latency</th><th>Avg</th><th>Success%</th><th>Weight</th><th>Conns</th><th>Ext IP</th></tr>';
     (g.proxies || []).forEach(p => {
-      const dotClr = p.status === 'alive' ? '#4ade80' : p.status === 'slow' ? '#fbbf24' : p.status === 'dead' ? '#f87171' : '#8a8ab0';
-      const pulse = p.status === 'alive' ? ' pulse' : '';
+      const dotClr = p.status === 'alive' ? 'var(--color-success)' : p.status === 'slow' ? 'var(--color-warning)' : p.status === 'dead' ? 'var(--color-danger)' : 'var(--text-muted)';
       html += '<tr><td>' + p.host + ':' + p.port + '</td>';
-      html += '<td><span class="health-dot' + pulse + '" style="background:' + dotClr + '"></span>' + p.status + '</td>';
+      html += '<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dotClr + ';margin-right:6px"></span>' + p.status + '</td>';
       html += '<td>' + (p.latency_ms||0) + 'ms</td>';
       html += '<td>' + (p.avg_latency||0) + 'ms</td>';
       html += '<td>' + ((p.success_rate||0)*100).toFixed(0) + '%</td>';
@@ -819,16 +935,16 @@ async function loadGroups() {
   if (!r.ok) return;
   const groups = r.data.groups || [];
   const container = document.getElementById('groupsList');
-  if (!groups.length) { container.innerHTML = '<p style="color:#8a8ab0">No groups yet</p>'; return; }
+  if (!groups.length) { container.innerHTML = '<p class="text-muted">No groups yet</p>'; return; }
   let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
   groups.forEach(g => {
-    html += '<div style="background:#0f1024;border:1px solid #0f3460;border-radius:8px;padding:12px">';
-    html += '<div style="font-weight:600;color:#a78bfa;font-size:14px">' + g.name + '</div>';
-    html += '<div style="font-size:12px;color:#8a8ab0;margin-top:4px">Mode: ' + g.rotation_mode + '</div>';
-    html += '<div style="font-size:12px;color:#8a8ab0">Proxies: ' + g.alive_count + '/' + g.proxy_count + ' alive</div>';
-    html += '<div style="font-size:12px;color:#8a8ab0">Ports: ' + (g.port_range||'none') + '</div>';
+    html += '<div class="card" style="padding:12px">';
+    html += '<div style="font-weight:600;color:var(--color-accent);font-size:14px">' + g.name + '</div>';
+    html += '<div class="text-sm text-muted" style="margin-top:4px">Mode: ' + g.rotation_mode + '</div>';
+    html += '<div class="text-sm text-muted">Proxies: ' + g.alive_count + '/' + g.proxy_count + ' alive</div>';
+    html += '<div class="text-sm text-muted">Ports: ' + (g.port_range||'none') + '</div>';
     html += '<div style="margin-top:8px"><button class="btn btn-xs" onclick="editGroup(\'' + g.name + '\')">Edit</button>';
-    html += ' <button class="btn btn-xs" style="background:#dc2626;color:white" onclick="deleteGroup(\'' + g.name + '\')">Delete</button></div>';
+    html += ' <button class="btn btn-xs btn-danger" style="padding:3px 8px;font-size:11px" onclick="deleteGroup(\'' + g.name + '\')">Delete</button></div>';
     html += '</div>';
   });
   html += '</div>';
@@ -881,11 +997,11 @@ async function loadPortMappings() {
 
 function renderPMTable() {
   const c = document.getElementById('portMapTable');
-  if (!portMappings.length) { c.innerHTML = '<p style="color:#8a8ab0">No mappings</p>'; return; }
+  if (!portMappings.length) { c.innerHTML = '<p class="text-muted">No mappings</p>'; return; }
   let html = '<table class="mini-table"><tr><th>Start</th><th>End</th><th>Group</th><th></th></tr>';
   portMappings.forEach((m, i) => {
     html += '<tr><td>' + m.port_start + '</td><td>' + m.port_end + '</td><td>' + m.group_name + '</td>';
-    html += '<td><button class="btn btn-xs" style="background:#dc2626;color:white" onclick="removePM(' + i + ')">X</button></td></tr>';
+    html += '<td><button class="btn btn-xs" class="btn-danger" onclick="removePM(' + i + ')">X</button></td></tr>';
   });
   html += '</table>';
   c.innerHTML = html;
@@ -923,17 +1039,17 @@ async function loadImportSources() {
   if (!r.ok) return;
   const sources = r.data.sources || [];
   const c = document.getElementById('importSourcesList');
-  if (!sources.length) { c.innerHTML = '<p style="color:#8a8ab0">No sources</p>'; return; }
+  if (!sources.length) { c.innerHTML = '<p class="text-muted">No sources</p>'; return; }
   let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
   sources.forEach(s => {
-    html += '<div style="background:#0f1024;border:1px solid #0f3460;border-radius:8px;padding:12px">';
-    html += '<div style="font-weight:600;color:#a78bfa">' + s.name + '</div>';
-    html += '<div style="font-size:11px;color:#8a8ab0;word-break:break-all">' + s.url + '</div>';
-    html += '<div style="font-size:12px;color:#8a8ab0;margin-top:4px">Group: ' + s.group_name + ' · ' + s.proxy_type + '</div>';
-    html += '<div style="font-size:12px;color:#8a8ab0">Interval: ' + s.interval_sec + 's · Last: ' + (s.last_count||0) + ' proxies</div>';
+    html += '<div style="background:var(--bg-inset);border:1px solid var(--border-color);border-radius:8px;padding:12px">';
+    html += '<div style="font-weight:600;color:var(--color-accent)">' + s.name + '</div>';
+    html += '<div style="font-size:11px;color:var(--text-muted);word-break:break-all">' + s.url + '</div>';
+    html += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px">Group: ' + s.group_name + ' · ' + s.proxy_type + '</div>';
+    html += '<div style="font-size:12px;color:var(--text-muted)">Interval: ' + s.interval_sec + 's · Last: ' + (s.last_count||0) + ' proxies</div>';
     html += '<div style="margin-top:8px">';
     html += '<button class="btn btn-xs" onclick="fetchImportNow(\'' + s.name + '\')">Fetch Now</button>';
-    html += ' <button class="btn btn-xs" style="background:#dc2626;color:white" onclick="deleteImport(\'' + s.name + '\')">Delete</button>';
+    html += ' <button class="btn btn-xs" class="btn-danger" onclick="deleteImport(\'' + s.name + '\')">Delete</button>';
     html += '</div></div>';
   });
   html += '</div>';

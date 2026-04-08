@@ -1,19 +1,31 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Proxy Dispatcher — Login</title>
 <link rel="stylesheet" href="style.css">
+<script>
+  // Apply saved theme immediately to prevent flash
+  (function(){
+    var t = localStorage.getItem('pd_theme');
+    if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  })();
+</script>
 </head>
 <body class="login-body">
   <div class="login-card">
-    <h1>Proxy Dispatcher</h1>
-    <p class="subtitle">Admin Login</p>
+    <div style="text-align:center;margin-bottom:8px">
+      <div class="logo-icon" style="display:inline-flex;width:44px;height:44px;font-size:20px;margin-bottom:8px">P</div>
+    </div>
+    <h1 style="text-align:center">Proxy Dispatcher</h1>
+    <p class="subtitle" style="text-align:center">Admin Login</p>
     <form id="loginForm">
-      <label>Username</label>
+      <label for="username">Username</label>
       <input type="text" id="username" autocomplete="username" required>
-      <label>Password</label>
+      <label for="password">Password</label>
       <input type="password" id="password" autocomplete="current-password" required>
       <button type="submit" class="btn btn-primary">Đăng nhập</button>
       <div id="err" class="err"></div>
@@ -21,17 +33,17 @@
     <form id="totpForm" style="display:none;">
       <p class="subtitle">Nhập mã 2FA (Google Authenticator)</p>
       <div id="totpInputs" class="totp-inputs">
-        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
-        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
-        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
-        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
-        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
-        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit" aria-label="2FA digit 1">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit" aria-label="2FA digit 2">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit" aria-label="2FA digit 3">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit" aria-label="2FA digit 4">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit" aria-label="2FA digit 5">
+        <input type="tel" maxlength="1" inputmode="numeric" class="totp-digit" aria-label="2FA digit 6">
       </div>
       <div id="totpErr" class="err"></div>
       <a href="#" id="useRecovery" class="link">Dùng Recovery Code</a>
       <div id="recoveryWrap" style="display:none;margin-top:10px;">
-        <label>Recovery Code</label>
+        <label for="recoveryCode">Recovery Code</label>
         <input type="text" id="recoveryCode" placeholder="xxxxxxxx">
         <button type="button" id="submitRecovery" class="btn btn-primary">Xác nhận</button>
       </div>
