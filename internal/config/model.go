@@ -334,10 +334,14 @@ func DefaultConfig() *AppConfig {
 func (c *AppConfig) MigrateToGroups() bool {
 	changed := false
 	if len(c.ProxyGroups) == 0 && len(c.InputProxies) > 0 {
+		mode := c.RotationMode
+		if mode == "" {
+			mode = "roundrobin"
+		}
 		c.ProxyGroups = []ProxyGroup{{
 			Name:         "default",
 			Proxies:      c.InputProxies,
-			RotationMode: "roundrobin",
+			RotationMode: mode,
 			StickyTTLSec: 300,
 		}}
 		changed = true
