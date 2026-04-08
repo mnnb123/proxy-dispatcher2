@@ -116,6 +116,7 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 		// Check bypass/block rules for this domain.
 		if h.ruleEngine != nil && result.DestHost != "" {
 			action := h.ruleEngine.Evaluate(result.DestHost, "")
+			h.logger.Debug("socks5 rule eval", "domain", result.DestHost, "action", action.Type, "target", targetAddr)
 			switch action.Type {
 			case "direct", "resource":
 				// Bypass: connect directly to target, skip upstream proxy.
