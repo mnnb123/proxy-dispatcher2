@@ -357,6 +357,7 @@ func main() {
 					return dialErr
 				}
 				if len(reqInfo.ConsumedBytes) > 0 {
+					// HTTPS CONNECT through HTTP proxy: use dedicated handler (injects auth).
 					if proxy.Type == "http" && reqInfo.IsHTTPS {
 						pr, err := httpH.HandleConnection(ctx, engine.WrapPrefixAsBuffered(prefixConn), *proxy)
 						if err != nil {
@@ -368,7 +369,12 @@ func main() {
 						proxyConn.Close()
 						return nil
 					}
-					if _, err := proxyConn.Write(reqInfo.ConsumedBytes); err != nil {
+					// For other cases: inject Proxy-Authorization into consumed bytes before forwarding.
+					outBytes := reqInfo.ConsumedBytes
+					if proxy.User != "" {
+						outBytes = engine.InjectProxyAuth(reqInfo.ConsumedBytes, proxy.User, proxy.Pass)
+					}
+					if _, err := proxyConn.Write(outBytes); err != nil {
 						proxyConn.Close()
 						return err
 					}
