@@ -240,6 +240,21 @@ document.getElementById('saveInputBtn').addEventListener('click', async () => {
   loadConfig();
 });
 
+function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch(e) { return Promise.reject(e); }
+  finally { ta.remove(); }
+  return Promise.resolve();
+}
+
 document.getElementById('copyBtn').addEventListener('click', async () => {
   const inp = await apiCall('GET', '/api/config/input');
   if (!inp.ok || !inp.data.mapping || inp.data.mapping.length === 0) {
@@ -247,7 +262,7 @@ document.getElementById('copyBtn').addEventListener('click', async () => {
     return;
   }
   const text = inp.data.mapping.map(m => m.output_addr).join('\n');
-  navigator.clipboard.writeText(text).then(
+  copyToClipboard(text).then(
     () => setMsg('inputMsg', 'Copied ' + inp.data.mapping.length + ' output addresses', false),
     () => setMsg('inputMsg', 'Copy failed', true)
   );
@@ -1341,7 +1356,7 @@ function updateSyncBoxes(){
 document.getElementById('syncRole')?.addEventListener('change', updateSyncBoxes);
 document.getElementById('copySecretBtn')?.addEventListener('click', ()=>{
   const s = document.getElementById('syncSecret').value;
-  navigator.clipboard.writeText(s); alert('Copied');
+  copyToClipboard(s).then(() => alert('Copied'), () => alert('Copy failed'));
 });
 document.getElementById('syncNowBtn')?.addEventListener('click', async ()=>{
   try{ const r = await apiPost('/api/sync/push', {}); alert(JSON.stringify(r.results,null,2)); }
