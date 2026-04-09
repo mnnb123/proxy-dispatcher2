@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -22,6 +23,9 @@ func (f *FixedRotator) SetPortStart(port int) {
 	f.mu.Lock()
 	f.portStart = port
 	f.mu.Unlock()
+	if f.logger != nil {
+		f.logger.Info("FixedRotator: portStart set", "portStart", port, "proxyCount", len(f.proxies))
+	}
 }
 
 // NextForPort returns the proxy assigned to the given port.
@@ -39,7 +43,11 @@ func (f *FixedRotator) NextForPort(port int) (*config.ProxyEntry, error) {
 		idx = 0
 	}
 	idx = idx % len(f.proxies)
-	return f.proxies[idx], nil
+	proxy := f.proxies[idx]
+	if f.logger != nil {
+		f.logger.Debug("FixedRotator: NextForPort", "port", port, "portStart", f.portStart, "idx", idx, "proxy", fmt.Sprintf("%s:%d", proxy.Host, proxy.Port))
+	}
+	return proxy, nil
 }
 
 // Next falls back to index-based selection (for compatibility).

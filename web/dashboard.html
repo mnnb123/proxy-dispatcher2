@@ -206,6 +206,17 @@
             </select>
           </div>
           <div class="col">
+            <label for="rotationMode">Rotation Mode</label>
+            <select id="rotationMode">
+              <option value="roundrobin">Round Robin</option>
+              <option value="random">Random</option>
+              <option value="sticky">Sticky (IP)</option>
+              <option value="leastconn">Least Connections</option>
+              <option value="weighted">Weighted</option>
+              <option value="fixed">Fixed (1 port = 1 proxy)</option>
+            </select>
+          </div>
+          <div class="col">
             <label for="vpsIp">VPS IP</label>
             <input type="text" id="vpsIp">
           </div>

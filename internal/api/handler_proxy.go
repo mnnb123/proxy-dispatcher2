@@ -36,20 +36,22 @@ func (s *Server) handleGetInput(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"input_type": s.cfg.InputType,
-		"proxies":    s.cfg.InputProxies,
-		"mapping":    rows,
-		"vps_ip":     s.cfg.VpsIp,
-		"start_port": s.cfg.OutputStartPort,
-		"count":      len(proxies),
+		"input_type":    s.cfg.InputType,
+		"proxies":       s.cfg.InputProxies,
+		"mapping":       rows,
+		"vps_ip":        s.cfg.VpsIp,
+		"start_port":    s.cfg.OutputStartPort,
+		"count":         len(proxies),
+		"rotation_mode": s.cfg.RotationMode,
 	})
 }
 
 type postInputReq struct {
-	InputType string `json:"input_type"`
-	RawText   string `json:"raw_text"`
-	VpsIp     string `json:"vps_ip"`
-	StartPort int    `json:"start_port"`
+	InputType    string `json:"input_type"`
+	RawText      string `json:"raw_text"`
+	VpsIp        string `json:"vps_ip"`
+	StartPort    int    `json:"start_port"`
+	RotationMode string `json:"rotation_mode"`
 }
 
 func (s *Server) handlePostInput(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +83,11 @@ func (s *Server) handlePostInput(w http.ResponseWriter, r *http.Request) {
 	s.cfg.InputProxies = entries
 	s.cfg.InputType = req.InputType
 	s.cfg.OutputCount = len(entries)
+
+	// Update rotation mode if provided in request.
+	if req.RotationMode != "" {
+		s.cfg.RotationMode = req.RotationMode
+	}
 
 	// Auto-create default group + port mapping.
 	if len(entries) > 0 {
