@@ -78,7 +78,7 @@ function initSidebar() {
     });
   }
 
-  // Nav item clicks → switch tabs
+  // Nav item clicks → switch tabs + tab-aware data refresh
   document.querySelectorAll('.nav-item[data-tab]').forEach(item => {
     item.addEventListener('click', () => {
       document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -89,6 +89,24 @@ function initSidebar() {
       // Close sidebar on mobile
       sidebar.classList.remove('open');
       if (overlay) overlay.classList.remove('active');
+
+      // Clear existing intervals
+      if (typeof bwInterval !== 'undefined' && bwInterval) { clearInterval(bwInterval); bwInterval = null; }
+      if (typeof dashInterval !== 'undefined' && dashInterval) { clearInterval(dashInterval); dashInterval = null; }
+
+      // Tab-specific data loading
+      const t = item.dataset.tab;
+      if (t === 'tab-bandwidth') {
+        refreshBandwidth();
+        bwInterval = setInterval(refreshBandwidth, 5000);
+      } else if (t === 'tab-dashboard') {
+        loadHealthStatus();
+        dashInterval = setInterval(loadHealthStatus, 10000);
+      } else if (t === 'tab-groups') {
+        loadGroups(); loadImportSources(); loadHealthConfig(); loadRetryConfig();
+      } else if (t === 'tab-portmap') {
+        loadGroups().then(loadPortMappings);
+      }
     });
   });
 }
@@ -670,16 +688,7 @@ document.getElementById('clearBwBtn').addEventListener('click', async () => {
   }
 });
 
-// Tab-aware auto-refresh for bandwidth.
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (bwInterval) { clearInterval(bwInterval); bwInterval = null; }
-    if (btn.dataset.tab === 'tab-bandwidth') {
-      refreshBandwidth();
-      bwInterval = setInterval(refreshBandwidth, 5000);
-    }
-  });
-});
+// Tab-aware auto-refresh for bandwidth is handled in initSidebar().
 
 // ── Report Tab ─────────────────────────────────────────────
 let liveWS = null;
@@ -1126,23 +1135,7 @@ document.getElementById('saveRetryBtn').addEventListener('click', async () => {
   setMsg('retryMsg', r.ok ? 'Saved' : (r.data.error||'Failed'), !r.ok);
 });
 
-// Tab-aware refresh.
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (dashInterval) { clearInterval(dashInterval); dashInterval = null; }
-    if (btn.dataset.tab === 'tab-dashboard') {
-      loadHealthStatus();
-      dashInterval = setInterval(loadHealthStatus, 10000);
-    } else if (btn.dataset.tab === 'tab-groups') {
-      loadGroups();
-      loadImportSources();
-      loadHealthConfig();
-      loadRetryConfig();
-    } else if (btn.dataset.tab === 'tab-portmap') {
-      loadGroups().then(loadPortMappings);
-    }
-  });
-});
+// Tab-aware refresh is handled in initSidebar().
 
 // ── Init ───────────────────────────────────────────────────
 async function initAll() {
