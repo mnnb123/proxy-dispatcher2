@@ -157,7 +157,6 @@ async function loadConfig() {
   const inp = await apiCall('GET', '/api/config/input');
   if (inp.ok) {
     document.getElementById('inputType').value = inp.data.input_type || 'http';
-    document.getElementById('rotationMode').value = inp.data.rotation_mode || 'roundrobin';
     document.getElementById('vpsIp').value = inp.data.vps_ip || '';
     document.getElementById('startPort').value = inp.data.start_port || 30001;
     const lines = (inp.data.proxies || []).map(p => {
@@ -209,7 +208,6 @@ function renderMappingTable(mapping) {
 document.getElementById('saveInputBtn').addEventListener('click', async () => {
   const body = {
     input_type: document.getElementById('inputType').value,
-    rotation_mode: document.getElementById('rotationMode').value,
     raw_text: document.getElementById('inputList').value,
     vps_ip: document.getElementById('vpsIp').value,
     start_port: parseInt(document.getElementById('startPort').value, 10),

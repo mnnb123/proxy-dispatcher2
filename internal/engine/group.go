@@ -19,18 +19,20 @@ type ManagedGroup struct {
 
 // GroupManager maps inbound ports to proxy groups.
 type GroupManager struct {
-	groups  map[string]*ManagedGroup
-	portMap map[int]string
-	logger  *slog.Logger
-	mu      sync.RWMutex
+	groups       map[string]*ManagedGroup
+	portMap      map[int]string
+	portProxyMap map[int]*config.ProxyEntry // direct port→proxy 1:1 lookup
+	logger       *slog.Logger
+	mu           sync.RWMutex
 }
 
 // NewGroupManager constructs a GroupManager from config.
 func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, logger *slog.Logger) (*GroupManager, error) {
 	gm := &GroupManager{
-		groups:  make(map[string]*ManagedGroup),
-		portMap: make(map[int]string),
-		logger:  logger,
+		groups:       make(map[string]*ManagedGroup),
+		portMap:      make(map[int]string),
+		portProxyMap: make(map[int]*config.ProxyEntry),
+		logger:       logger,
 	}
 	for i := range groups {
 		g := &groups[i]
@@ -58,10 +60,12 @@ func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, 
 		}
 		for p := m.PortStart; p <= m.PortEnd; p++ {
 			gm.portMap[p] = m.GroupName
-		}
-		// For fixed rotation, set the base port so index calculation works.
-		if fr, ok := g.Rotator.(*FixedRotator); ok {
-			fr.SetPortStart(m.PortStart)
+			// Build 1:1 port→proxy map by index.
+			idx := p - m.PortStart
+			if idx >= 0 && idx < len(g.Proxies) {
+				gm.portProxyMap[p] = g.Proxies[idx]
+				logger.Info("port→proxy mapped", "port", p, "proxy", fmt.Sprintf("%s:%d", g.Proxies[idx].Host, g.Proxies[idx].Port), "idx", idx)
+			}
 		}
 	}
 	return gm, nil
@@ -86,21 +90,34 @@ func (gm *GroupManager) GetGroupForPort(port int) (*ManagedGroup, error) {
 	return g, nil
 }
 
+// GetProxyForPort returns the proxy directly mapped to this port (1:1).
+// This is the primary lookup — no rotation involved.
+func (gm *GroupManager) GetProxyForPort(port int) (*config.ProxyEntry, bool) {
+	gm.mu.RLock()
+	defer gm.mu.RUnlock()
+	p, ok := gm.portProxyMap[port]
+	return p, ok
+}
+
 // GetNextProxy picks the next proxy for a port/clientIP combination.
-// For "fixed" rotation mode, uses port-based index mapping.
+// Falls back to rotator only if no direct 1:1 mapping exists.
 func (gm *GroupManager) GetNextProxy(port int, clientIP string) (*config.ProxyEntry, error) {
+	// Always try direct 1:1 mapping first.
+	if p, ok := gm.GetProxyForPort(port); ok {
+		return p, nil
+	}
 	g, err := gm.GetGroupForPort(port)
 	if err != nil {
 		return nil, err
 	}
-	return g.NextProxy(port, clientIP)
+	return g.Rotator.Next(clientIP)
 }
 
-// NextProxy selects a proxy using the group's rotator.
-// For fixed mode, maps port → proxy by index.
-func (g *ManagedGroup) NextProxy(port int, clientIP string) (*config.ProxyEntry, error) {
-	if fr, ok := g.Rotator.(*FixedRotator); ok {
-		return fr.NextForPort(port)
+// NextProxy selects a proxy for the given port.
+// Uses direct 1:1 lookup. Falls back to rotator only if no mapping.
+func (g *ManagedGroup) NextProxy(port int, clientIP string, gm *GroupManager) (*config.ProxyEntry, error) {
+	if p, ok := gm.GetProxyForPort(port); ok {
+		return p, nil
 	}
 	return g.Rotator.Next(clientIP)
 }
