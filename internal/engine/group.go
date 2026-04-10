@@ -159,6 +159,7 @@ func (gm *GroupManager) Reload(groups []config.ProxyGroup, mappings []config.Por
 	gm.mu.Lock()
 	gm.groups = newGm.groups
 	gm.portMap = newGm.portMap
+	gm.portProxyMap = newGm.portProxyMap
 	gm.mu.Unlock()
 	return nil
 }
