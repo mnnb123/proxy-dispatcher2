@@ -93,6 +93,7 @@ function initSidebar() {
       // Clear existing intervals
       if (typeof bwInterval !== 'undefined' && bwInterval) { clearInterval(bwInterval); bwInterval = null; }
       if (typeof dashInterval !== 'undefined' && dashInterval) { clearInterval(dashInterval); dashInterval = null; }
+      if (typeof reportInterval !== 'undefined' && reportInterval) { clearInterval(reportInterval); reportInterval = null; }
 
       // Tab-specific data loading
       const t = item.dataset.tab;
@@ -106,6 +107,21 @@ function initSidebar() {
         loadGroups(); loadImportSources(); loadHealthConfig(); loadRetryConfig();
       } else if (t === 'tab-portmap') {
         loadGroups().then(loadPortMappings);
+      } else if (t === 'tab-report') {
+        if (typeof refreshReportStats === 'function') refreshReportStats();
+        if (typeof drawMinuteChart === 'function') drawMinuteChart();
+        if (typeof loadReportTopDomains === 'function') loadReportTopDomains();
+        if (typeof loadDiskUsage === 'function') loadDiskUsage();
+        if (typeof loadAlerts === 'function') loadAlerts();
+        reportInterval = setInterval(() => {
+          if (typeof refreshReportStats === 'function') refreshReportStats();
+          if (typeof drawMinuteChart === 'function') drawMinuteChart();
+          if (typeof loadReportTopDomains === 'function') loadReportTopDomains();
+        }, 5000);
+      }
+      // Phase 6 tabs
+      if (typeof phase6TabLoaders !== 'undefined' && phase6TabLoaders[t]) {
+        phase6TabLoaders[t]();
       }
     });
   });
@@ -156,15 +172,7 @@ function setMsg(id, text, isError) {
   else if (!isError && text) Toast.success('Success', text);
 }
 
-// ── Tab switching (legacy compat — sidebar handles this now) ─
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
-    btn.classList.add('active');
-    document.getElementById(btn.dataset.tab).style.display = 'block';
-  });
-});
+// Legacy .tab-btn switching removed — sidebar handles all tab switching now.
 
 // Initialize sidebar
 initSidebar();
@@ -887,24 +895,7 @@ document.getElementById('clearAlertsBtn').addEventListener('click', async () => 
   loadAlerts();
 });
 
-// Tab-aware auto-refresh for report.
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (reportInterval) { clearInterval(reportInterval); reportInterval = null; }
-    if (btn.dataset.tab === 'tab-report') {
-      refreshReportStats();
-      drawMinuteChart();
-      loadReportTopDomains();
-      loadDiskUsage();
-      loadAlerts();
-      reportInterval = setInterval(() => {
-        refreshReportStats();
-        drawMinuteChart();
-        loadReportTopDomains();
-      }, 5000);
-    }
-  });
-});
+// Tab-aware auto-refresh for report is handled in initSidebar().
 
 // ── Phase 5 — Dashboard / Health ───────────────────────────
 let dashInterval = null;
@@ -1469,12 +1460,7 @@ const phase6TabLoaders = {
   'tab-users': ()=>{ loadUsers(); loadTokens(); },
   'tab-settings': ()=>{ loadSyncStatus(); loadDNS(); loadBackups(); loadSystemInfo(); },
 };
-document.querySelectorAll('.tab-btn').forEach(btn=>{
-  btn.addEventListener('click', ()=>{
-    const id = btn.dataset.tab;
-    if(phase6TabLoaders[id]) phase6TabLoaders[id]();
-  });
-});
+// Phase 6 tab loading is handled in initSidebar().
 // Auto-refresh system info on settings tab every 10s.
 setInterval(()=>{
   if(document.getElementById('tab-settings')?.style.display !== 'none') loadSystemInfo();
