@@ -497,10 +497,10 @@ document.getElementById('addMyIpBtn').addEventListener('click', async () => {
   loadWhitelist();
 });
 
-document.getElementById('saveWlConfigBtn').addEventListener('click', async () => {
+async function saveWhitelistConfig() {
   const body = {
     enabled: document.getElementById('wlEnabled').checked,
-    entries: [], // Keep existing entries on server side.
+    entries: [],
     auto_ban: {
       enabled: document.getElementById('abEnabled').checked,
       max_attempts: parseInt(document.getElementById('abMaxAttempts').value, 10),
@@ -513,7 +513,12 @@ document.getElementById('saveWlConfigBtn').addEventListener('click', async () =>
   const r = await apiCall('POST', '/api/config/whitelist', body);
   if (!r.ok) { setMsg('wlConfigMsg', r.data.error || 'Failed', true); return; }
   setMsg('wlConfigMsg', 'Saved', false);
-});
+}
+
+document.getElementById('saveWlConfigBtn').addEventListener('click', saveWhitelistConfig);
+
+// Auto-save when Enable Whitelist checkbox is toggled.
+document.getElementById('wlEnabled').addEventListener('change', saveWhitelistConfig);
 
 // ── Auto Bypass ────────────────────────────────────────────
 async function loadAutoBypass() {
