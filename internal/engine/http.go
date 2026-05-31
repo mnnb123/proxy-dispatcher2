@@ -86,13 +86,11 @@ func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedCon
 			proxyConn.Close()
 			return PipeResult{}, fmt.Errorf("write connect: %w", err)
 		}
-		buf := make([]byte, 4096)
-		n, err := proxyConn.Read(buf)
+		resp, err := readConnectResponse(proxyConn)
 		if err != nil {
 			proxyConn.Close()
 			return PipeResult{}, fmt.Errorf("read connect response: %w", err)
 		}
-		resp := string(buf[:n])
 		if len(resp) < 12 || resp[9:12] != "200" {
 			proxyConn.Close()
 			return PipeResult{}, fmt.Errorf("upstream CONNECT failed: %s", resp)

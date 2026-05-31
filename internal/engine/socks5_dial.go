@@ -38,19 +38,44 @@ func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAd
 		return nil, fmt.Errorf("write connect: %w", err)
 	}
 
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
+	resp, err := readConnectResponse(conn)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("read connect response: %w", err)
 	}
-	resp := string(buf[:n])
 	if len(resp) < 12 || resp[9:12] != "200" {
 		conn.Close()
 		// CONNECT denied (e.g. Squid blocks non-SSL ports). Fall back to direct.
 		return d.DialContext(ctx, "tcp", targetAddr)
 	}
 	return conn, nil
+}
+
+// readConnectResponse reads an HTTP CONNECT reply from conn exactly up to the
+// terminating \r\n\r\n, without consuming any byte that follows. Reading the
+// reply with a single Read() risks both a short read (status looks OK but the
+// rest of the header is left in the socket) and over-read (the first TLS bytes
+// from the target get swallowed) — either corrupts the tunnelled TLS handshake
+// and surfaces in the browser as ERR_SSL_PROTOCOL_ERROR.
+func readConnectResponse(conn net.Conn) (string, error) {
+	buf := make([]byte, 0, 256)
+	one := make([]byte, 1)
+	for len(buf) < 8192 {
+		n, err := conn.Read(one)
+		if n > 0 {
+			buf = append(buf, one[0])
+			if len(buf) >= 4 && string(buf[len(buf)-4:]) == "\r\n\r\n" {
+				return string(buf), nil
+			}
+		}
+		if err != nil {
+			if len(buf) > 0 {
+				return string(buf), nil
+			}
+			return "", err
+		}
+	}
+	return string(buf), nil
 }
 
 // dialThroughSOCKS5Proxy performs a SOCKS5 handshake with proxy and

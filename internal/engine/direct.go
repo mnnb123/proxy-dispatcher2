@@ -51,13 +51,11 @@ func (d *DirectDialer) DialThroughResource(ctx context.Context, addr string, pro
 			conn.Close()
 			return nil, fmt.Errorf("write CONNECT: %w", err)
 		}
-		buf := make([]byte, 4096)
-		n, err := conn.Read(buf)
+		resp, err := readConnectResponse(conn)
 		if err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("read CONNECT response: %w", err)
 		}
-		resp := string(buf[:n])
 		if len(resp) < 12 || resp[9:12] != "200" {
 			conn.Close()
 			return nil, fmt.Errorf("resource proxy CONNECT failed: %s", resp)

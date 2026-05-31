@@ -211,7 +211,12 @@ func (h *ConnHandler) routeResource(ctx context.Context, buffConn *engine.Buffer
 		h.record(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", err.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 		return
 	}
-	pr := engine.Pipe(ctx, prefixConn, remoteConn, h.idleTimeout)
+	// Use pipeDirectConn so HTTPS gets the CONNECT 200 reply + raw client
+	// pipe, and HTTP replays the consumed request line via prefixConn. The
+	// resource tunnel from DialThroughResource already reaches the target
+	// host directly, so the client's CONNECT line must NOT be replayed into
+	// it — doing so corrupts the TLS handshake (ERR_SSL_PROTOCOL_ERROR).
+	pr := h.pipeDirectConn(ctx, buffConn, prefixConn, remoteConn, reqInfo)
 	h.tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "resource")
 	h.record(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "resource", "", "", 200, pr.BytesSent, pr.BytesReceived, time.Since(startTime).Milliseconds())
 }
@@ -285,16 +290,22 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 		return fmt.Errorf("write CONNECT: %w", err)
 	}
 
-	buf := make([]byte, 4096)
-	n, err := proxyConn.Read(buf)
+	// Read the upstream CONNECT response exactly up to the terminating
+	// \r\n\r\n. A single Read() is unsafe: the response may arrive split
+	// across segments (a short read passes the status check but leaves
+	// trailing header bytes in the socket, which then leak into the TLS
+	// stream as the client's "first server bytes" → ERR_SSL_PROTOCOL_ERROR),
+	// or contain extra headers we would otherwise discard. Reading one byte
+	// at a time stops precisely at the header boundary so the pipe that
+	// follows carries only real TLS records.
+	resp, err := readUntilHeaderEnd(proxyConn, 8192)
 	if err != nil {
 		proxyConn.Close()
 		return fmt.Errorf("read CONNECT response: %w", err)
 	}
-	resp := string(buf[:n])
 	if len(resp) < 12 || resp[9:12] != "200" {
 		proxyConn.Close()
-		return fmt.Errorf("upstream CONNECT failed: %s", resp)
+		return fmt.Errorf("upstream CONNECT failed: %s", strings.TrimSpace(resp))
 	}
 
 	if _, err := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
@@ -308,6 +319,34 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 	}
 	*result = res
 	return nil
+}
+
+// readUntilHeaderEnd reads from conn one byte at a time until the HTTP header
+// terminator "\r\n\r\n" is seen, returning everything read so far. It never
+// reads past the terminator, so no subsequent (TLS) bytes are consumed. A
+// short read deadline guards against a proxy that never finishes the response.
+func readUntilHeaderEnd(conn net.Conn, max int) (string, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+
+	buf := make([]byte, 0, 256)
+	one := make([]byte, 1)
+	for len(buf) < max {
+		n, err := conn.Read(one)
+		if n > 0 {
+			buf = append(buf, one[0])
+			if len(buf) >= 4 && string(buf[len(buf)-4:]) == "\r\n\r\n" {
+				return string(buf), nil
+			}
+		}
+		if err != nil {
+			if len(buf) > 0 {
+				return string(buf), nil
+			}
+			return "", err
+		}
+	}
+	return string(buf), nil
 }
 
 // pipeDirectConn pipes data between client and remote for direct connections.
