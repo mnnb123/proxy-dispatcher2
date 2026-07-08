@@ -69,6 +69,16 @@ func (h *ConnHandler) Handle(conn net.Conn) {
 
 // checkWhitelist verifies the client IP. Returns false if blocked (conn is closed).
 func (h *ConnHandler) checkWhitelist(conn net.Conn, clientIP string) bool {
+	// Banned IPs are rejected outright — unless covered by the whitelist.
+	if !h.whitelistMgr.Matches(clientIP) {
+		if banned, _ := h.bruteGuard.IsBanned(clientIP); banned {
+			h.logger.Debug("banned IP rejected", "ip", clientIP)
+			h.record(0, clientIP, "", "", "", "", "", "blocked", "", "banned", 403, 0, 0, 0)
+			conn.Close()
+			return false
+		}
+	}
+
 	allowed, reason := h.whitelistMgr.IsAllowed(clientIP)
 	if allowed {
 		return true

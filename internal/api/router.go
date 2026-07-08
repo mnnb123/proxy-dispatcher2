@@ -158,6 +158,7 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("GET /api/config/whitelist/my-ip", s.handleMyIP)
 	s.mux.HandleFunc("GET /api/config/whitelist/banned", s.handleBannedIPs)
 	s.mux.HandleFunc("DELETE /api/config/whitelist/banned", s.handleClearBanned)
+	s.mux.HandleFunc("POST /api/config/whitelist/ban", s.handleBanIP)
 	s.mux.HandleFunc("GET /api/config/auto-bypass", s.handleGetAutoBypass)
 	s.mux.HandleFunc("POST /api/config/auto-bypass", s.handlePostAutoBypass)
 	s.mux.HandleFunc("GET /api/auto-bypass/stats", s.handleAutoBypassStats)

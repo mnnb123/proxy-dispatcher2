@@ -13,7 +13,7 @@
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
       <div class="logo-icon">P</div>
-      <h1>Proxy</h1>
+      <h1>Proxy <span id="appVersion" style="font-size:11px;font-weight:400;color:var(--text-muted)"></span></h1>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-section">Overview</div>
@@ -364,6 +364,11 @@
         </div>
         <button class="btn btn-primary" id="saveWlConfigBtn">Save Whitelist Config</button>
         <div id="wlConfigMsg" class="msg"></div>
+        <h3 style="margin-top:14px">Ban IP thủ công</h3>
+        <div class="row">
+          <div class="col"><input type="text" id="banIpInput" placeholder="1.2.3.4"></div>
+          <div class="col" style="flex:0"><button class="btn btn-danger" id="banIpBtn">Ban IP</button></div>
+        </div>
         <h3 style="margin-top:14px">Banned IPs
           <button class="btn btn-xs btn-danger" id="clearBannedBtn" style="margin-left:8px">Xóa tất cả</button>
         </h3>

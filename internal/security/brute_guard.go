@@ -70,11 +70,19 @@ func (bg *BruteGuard) RecordAndCheck(clientIP string) (bool, time.Duration) {
 	return false, 0
 }
 
+// Ban manually bans clientIP for the configured ban duration,
+// regardless of whether auto-ban is enabled.
+func (bg *BruteGuard) Ban(clientIP string) {
+	bg.mu.Lock()
+	defer bg.mu.Unlock()
+	now := time.Now()
+	bg.attempts[clientIP] = &AttemptRecord{Count: bg.maxAttempts, FirstAt: now, BannedAt: now}
+	bg.logger.Warn("IP manually banned", "ip", clientIP)
+}
+
 // IsBanned checks ban status without incrementing the counter.
+// Note: not gated on enabled so manual bans work even when auto-ban is off.
 func (bg *BruteGuard) IsBanned(clientIP string) (bool, time.Duration) {
-	if !bg.enabled {
-		return false, 0
-	}
 	bg.mu.Lock()
 	defer bg.mu.Unlock()
 

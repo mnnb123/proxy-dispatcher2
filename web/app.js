@@ -469,6 +469,16 @@ async function loadBannedIPs() {
   }
 }
 
+document.getElementById('banIpBtn').addEventListener('click', async () => {
+  const ip = document.getElementById('banIpInput').value.trim();
+  if (!ip) { setMsg('wlConfigMsg', 'Nhập IP cần ban', true); return; }
+  const r = await apiCall('POST', '/api/config/whitelist/ban', { ip });
+  if (!r.ok) { setMsg('wlConfigMsg', r.data.error || 'Failed', true); return; }
+  setMsg('wlConfigMsg', 'Đã ban ' + ip, false);
+  document.getElementById('banIpInput').value = '';
+  loadBannedIPs();
+});
+
 document.getElementById('clearBannedBtn').addEventListener('click', async () => {
   const r = await apiCall('DELETE', '/api/config/whitelist/banned');
   if (!r.ok) { setMsg('wlConfigMsg', r.data.error || 'Failed', true); return; }
@@ -1161,7 +1171,15 @@ document.getElementById('saveRetryBtn').addEventListener('click', async () => {
 // Tab-aware refresh is handled in initSidebar().
 
 // ── Init ───────────────────────────────────────────────────
+async function loadAppVersion() {
+  const r = await apiCall('GET', '/api/system/info');
+  if (r.ok && r.data.version) {
+    document.getElementById('appVersion').textContent = r.data.version;
+  }
+}
+
 async function initAll() {
+  loadAppVersion();
   await loadConfig();
   loadWhitelist();
   loadAutoBypass();

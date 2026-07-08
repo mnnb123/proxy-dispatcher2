@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"time"
 
@@ -117,6 +118,29 @@ func (s *Server) handleBannedIPs(w http.ResponseWriter, r *http.Request) {
 		ips = append(ips, ip)
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"ips": ips})
+}
+
+type banIPReq struct {
+	IP string `json:"ip"`
+}
+
+func (s *Server) handleBanIP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req banIPReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "bad json")
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		respondError(w, http.StatusBadRequest, "invalid IP")
+		return
+	}
+	if s.whitelistMgr.Matches(req.IP) {
+		respondError(w, http.StatusBadRequest, "IP is whitelisted — remove it from the whitelist first")
+		return
+	}
+	s.bruteGuard.Ban(req.IP)
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleClearBanned(w http.ResponseWriter, r *http.Request) {
