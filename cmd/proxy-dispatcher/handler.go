@@ -73,7 +73,11 @@ func (h *ConnHandler) checkWhitelist(conn net.Conn, clientIP string) bool {
 	if allowed {
 		return true
 	}
-	h.bruteGuard.RecordAndCheck(clientIP)
+	// Never count/ban an IP that is covered by a whitelist entry
+	// (e.g. whitelist matched but rejected for another reason).
+	if !h.whitelistMgr.Matches(clientIP) {
+		h.bruteGuard.RecordAndCheck(clientIP)
+	}
 	h.logger.Debug("whitelist rejected", "ip", clientIP, "reason", reason)
 	h.record(0, clientIP, "", "", "", "", "", "blocked", "", "whitelist: "+reason, 403, 0, 0, 0)
 	conn.Close()

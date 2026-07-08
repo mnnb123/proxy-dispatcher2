@@ -93,6 +93,34 @@ func (wm *WhitelistManager) IsAllowed(clientIP string) (bool, string) {
 	return false, "not whitelisted"
 }
 
+// Matches reports whether clientIP is covered by a (non-expired) whitelist
+// entry, regardless of whether the whitelist is enabled. Used to shield
+// whitelisted IPs from auto-ban.
+func (wm *WhitelistManager) Matches(clientIP string) bool {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+
+	ip := stripPort(clientIP)
+	now := time.Now().Unix()
+
+	if wm.exactIPs[ip] {
+		if exp, ok := wm.tempExpiry[ip]; ok && exp > 0 && now > exp {
+			return false
+		}
+		return true
+	}
+
+	parsed := net.ParseIP(ip)
+	if parsed != nil {
+		for _, cidr := range wm.cidrNets {
+			if cidr.Contains(parsed) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // AddEntry adds an IP entry to the whitelist.
 func (wm *WhitelistManager) AddEntry(entry config.WhitelistEntry) error {
 	wm.mu.Lock()

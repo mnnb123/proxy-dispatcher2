@@ -31,6 +31,7 @@ func (s *Server) handlePostWhitelist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.Whitelist = req
+	s.unbanWhitelisted()
 	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
 		respondError(w, http.StatusInternalServerError, "save failed")
 		return
@@ -69,6 +70,7 @@ func (s *Server) handleAddWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.Whitelist.Entries = s.whitelistMgr.GetEntries()
+	s.unbanWhitelisted()
 	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
 		respondError(w, http.StatusInternalServerError, "save failed")
 		return
@@ -105,9 +107,28 @@ func (s *Server) handleMyIP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBannedIPs(w http.ResponseWriter, r *http.Request) {
-	ips := s.bruteGuard.GetBannedIPs()
-	if ips == nil {
-		ips = []string{}
+	ips := []string{}
+	for _, ip := range s.bruteGuard.GetBannedIPs() {
+		// Whitelisted IPs must never appear banned — unban on sight.
+		if s.whitelistMgr.Matches(ip) {
+			s.bruteGuard.Unban(ip)
+			continue
+		}
+		ips = append(ips, ip)
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"ips": ips})
+}
+
+func (s *Server) handleClearBanned(w http.ResponseWriter, r *http.Request) {
+	n := s.bruteGuard.ClearBanned()
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "cleared": n})
+}
+
+// unbanWhitelisted lifts bans from any IP now covered by the whitelist.
+func (s *Server) unbanWhitelisted() {
+	for _, ip := range s.bruteGuard.GetBannedIPs() {
+		if s.whitelistMgr.Matches(ip) {
+			s.bruteGuard.Unban(ip)
+		}
+	}
 }

@@ -107,6 +107,29 @@ func (bg *BruteGuard) Cleanup() {
 	}
 }
 
+// Unban removes the ban/attempt record for a single IP.
+func (bg *BruteGuard) Unban(clientIP string) {
+	bg.mu.Lock()
+	defer bg.mu.Unlock()
+	delete(bg.attempts, clientIP)
+}
+
+// ClearBanned removes all attempt records, unbanning every IP.
+func (bg *BruteGuard) ClearBanned() int {
+	bg.mu.Lock()
+	defer bg.mu.Unlock()
+
+	n := 0
+	for ip, rec := range bg.attempts {
+		if !rec.BannedAt.IsZero() {
+			n++
+		}
+		delete(bg.attempts, ip)
+	}
+	bg.logger.Info("banned IPs cleared", "count", n)
+	return n
+}
+
 // GetBannedIPs returns the list of currently banned IPs.
 func (bg *BruteGuard) GetBannedIPs() []string {
 	bg.mu.Lock()

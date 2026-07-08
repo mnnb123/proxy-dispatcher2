@@ -457,12 +457,24 @@ async function loadWhitelist() {
   const ip = await apiCall('GET', '/api/config/whitelist/my-ip');
   if (ip.ok) document.getElementById('myIpDisplay').textContent = 'Your IP: ' + ip.data.ip;
 
+  loadBannedIPs();
+}
+
+async function loadBannedIPs() {
   const banned = await apiCall('GET', '/api/config/whitelist/banned');
   if (banned.ok) {
     const ips = banned.data.ips || [];
     document.getElementById('bannedList').textContent = ips.length ? ips.join(', ') : 'None';
+    document.getElementById('clearBannedBtn').style.display = ips.length ? '' : 'none';
   }
 }
+
+document.getElementById('clearBannedBtn').addEventListener('click', async () => {
+  const r = await apiCall('DELETE', '/api/config/whitelist/banned');
+  if (!r.ok) { setMsg('wlConfigMsg', r.data.error || 'Failed', true); return; }
+  setMsg('wlConfigMsg', 'Đã xóa ' + (r.data.cleared ?? 0) + ' IP bị ban', false);
+  loadBannedIPs();
+});
 
 function renderWhitelistTable(entries) {
   const c = document.getElementById('wlTable');
