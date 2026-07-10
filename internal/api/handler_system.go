@@ -88,6 +88,29 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "imported"})
 }
 
+// handleResetPorts restarts all listeners and reloads runtime modules —
+// one-click recovery when ports stop responding (e.g. upstream proxy died).
+func (s *Server) handleResetPorts(w http.ResponseWriter, r *http.Request) {
+	if s.onConfigReload == nil {
+		respondError(w, http.StatusServiceUnavailable, "reload unavailable")
+		return
+	}
+	if err := s.onConfigReload(); err != nil {
+		respondError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
+		return
+	}
+	// Re-check proxy health in the background so alive/dead status refreshes.
+	if s.healthChecker != nil {
+		go s.healthChecker.CheckNow()
+	}
+	active := 0
+	if s.listenerMg != nil {
+		active = len(s.listenerMg.ActivePorts())
+	}
+	s.logger.Info("ports reset via API", "active_ports", active)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "active_ports": active})
+}
+
 func (s *Server) handleGetDNS(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, s.cfg.SystemConfig)
 }

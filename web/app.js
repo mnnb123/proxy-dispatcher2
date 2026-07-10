@@ -57,6 +57,29 @@ const Toast = {
   info(title, msg) { this.show('info', title, msg); }
 };
 
+// ── Reset Ports ───────────────────────────────────────────
+document.getElementById('resetPortsBtn')?.addEventListener('click', async () => {
+  if (!confirm('Reset toàn bộ ports?\nListeners sẽ khởi động lại + reload proxy map + re-check health.\nKết nối đang mở không bị ngắt.')) return;
+  const btn = document.getElementById('resetPortsBtn');
+  btn.disabled = true;
+  btn.textContent = 'Đang reset...';
+  try {
+    const r = await apiCall('POST', '/api/system/reset-ports');
+    if (r.ok) {
+      Toast.success('Reset Ports', 'Đã reset — ' + r.data.active_ports + ' ports đang hoạt động');
+      loadConfig();          // refresh status badge
+      loadHealthStatus?.();  // refresh health dashboard
+    } else {
+      Toast.error('Reset Ports', r.data.error || 'Reset thất bại');
+    }
+  } catch (e) {
+    Toast.error('Reset Ports', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '&#8635; Reset Ports';
+  }
+});
+
 // ── Sidebar Navigation ───────────────────────────────────
 function initSidebar() {
   const sidebar = document.getElementById('sidebar');

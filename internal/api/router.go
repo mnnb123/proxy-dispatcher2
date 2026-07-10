@@ -216,6 +216,7 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("POST /api/sync/push", s.handleSyncPush)
 	s.mux.HandleFunc("POST /api/sync/receive", s.handleSyncReceive)
 	s.mux.HandleFunc("GET /api/system/info", s.handleSystemInfo)
+	s.mux.HandleFunc("POST /api/system/reset-ports", s.handleResetPorts)
 	s.mux.HandleFunc("GET /api/system/backups", s.handleListBackups)
 	s.mux.HandleFunc("POST /api/system/backups", s.handleCreateBackup)
 	s.mux.HandleFunc("POST /api/system/backups/restore", s.handleRestoreBackup)
