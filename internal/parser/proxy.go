@@ -44,23 +44,41 @@ func ParseProxyList(rawText string, defaultType string) ([]config.ProxyEntry, []
 			continue
 		}
 
-		parts := strings.Split(rest, ":")
 		var host, user, pass string
 		var port int
 		var err error
 
-		switch len(parts) {
-		case 2:
-			host = parts[0]
-			port, err = strconv.Atoi(parts[1])
-		case 4:
-			host = parts[0]
-			port, err = strconv.Atoi(parts[1])
-			user = parts[2]
-			pass = parts[3]
-		default:
-			errs = append(errs, ParseError{Line: i + 1, RawText: raw, Reason: "format không hợp lệ"})
-			continue
+		if at := strings.LastIndex(rest, "@"); at >= 0 {
+			// user:pass@host:port
+			creds, hostPort := rest[:at], rest[at+1:]
+			cp := strings.SplitN(creds, ":", 2)
+			if len(cp) != 2 {
+				errs = append(errs, ParseError{Line: i + 1, RawText: raw, Reason: "format user:pass@ip:port không hợp lệ"})
+				continue
+			}
+			user, pass = cp[0], cp[1]
+			hp := strings.Split(hostPort, ":")
+			if len(hp) != 2 {
+				errs = append(errs, ParseError{Line: i + 1, RawText: raw, Reason: "format user:pass@ip:port không hợp lệ"})
+				continue
+			}
+			host = hp[0]
+			port, err = strconv.Atoi(hp[1])
+		} else {
+			parts := strings.Split(rest, ":")
+			switch len(parts) {
+			case 2:
+				host = parts[0]
+				port, err = strconv.Atoi(parts[1])
+			case 4:
+				host = parts[0]
+				port, err = strconv.Atoi(parts[1])
+				user = parts[2]
+				pass = parts[3]
+			default:
+				errs = append(errs, ParseError{Line: i + 1, RawText: raw, Reason: "format không hợp lệ"})
+				continue
+			}
 		}
 
 		if err != nil {

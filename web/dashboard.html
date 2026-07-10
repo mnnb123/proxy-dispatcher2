@@ -215,8 +215,8 @@
             <input type="number" id="startPort" value="30001">
           </div>
         </div>
-        <label for="inputList">Proxy List (host:port hoặc host:port:user:pass — mỗi dòng 1 proxy)</label>
-        <textarea id="inputList" rows="10" spellcheck="false" placeholder="1.2.3.4:8080&#10;5.6.7.8:1080:user:pass"></textarea>
+        <label for="inputList">Proxy List (host:port, host:port:user:pass hoặc user:pass@host:port — mỗi dòng 1 proxy)</label>
+        <textarea id="inputList" rows="10" spellcheck="false" placeholder="1.2.3.4:8080&#10;5.6.7.8:1080:user:pass&#10;user:pass@9.10.11.12:8080"></textarea>
         <div style="display:flex;gap:8px;margin-top:10px">
           <button id="saveInputBtn" class="btn btn-primary">Save & Apply</button>
           <button id="copyBtn" class="btn btn-success">Copy Output</button>
