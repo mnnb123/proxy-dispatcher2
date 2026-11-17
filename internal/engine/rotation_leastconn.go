@@ -42,10 +42,10 @@ func (lc *LeastConnRotator) Next(_ string) (*config.ProxyEntry, error) {
 	if len(best) == 1 {
 		return best[0], nil
 	}
+	lc.rngMu.Lock()
 	if lc.rng == nil {
 		lc.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
-	lc.rngMu.Lock()
 	idx := lc.rng.Intn(len(best))
 	lc.rngMu.Unlock()
 	return best[idx], nil

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"proxy-dispatcher/internal/config"
@@ -36,7 +35,7 @@ type restoreReq struct {
 
 func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	var req restoreReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -44,8 +43,9 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if s.onConfigReload != nil {
-		_ = s.onConfigReload()
+	if err := s.adoptConfigFromDisk(); err != nil {
+		respondError(w, http.StatusInternalServerError, "restored file but reload failed: "+err.Error())
+		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "restored"})
 }
@@ -82,10 +82,34 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if s.onConfigReload != nil {
-		_ = s.onConfigReload()
+	if err := s.adoptConfigFromDisk(); err != nil {
+		respondError(w, http.StatusInternalServerError, "imported file but reload failed: "+err.Error())
+		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "imported"})
+}
+
+// adoptConfigFromDisk re-reads the config file that RestoreBackup/ImportConfig
+// just wrote and makes it the live in-memory config. Without this the
+// restored file is never used: every module keeps running on the stale
+// *AppConfig, and the next SaveConfig from any handler overwrites the
+// restored file with the old contents.
+func (s *Server) adoptConfigFromDisk() error {
+	fresh, err := config.LoadConfig(s.cfgPath)
+	if err != nil {
+		return err
+	}
+	*s.cfg = *fresh
+	if s.userMgr != nil {
+		s.userMgr.Reload(s.cfg.Users)
+	}
+	if s.tokenMgr != nil {
+		s.tokenMgr.Reload(s.cfg.APITokens)
+	}
+	if s.onConfigReload != nil {
+		return s.onConfigReload()
+	}
+	return nil
 }
 
 // handleResetPorts restarts all listeners and reloads runtime modules —
@@ -117,7 +141,7 @@ func (s *Server) handleGetDNS(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePostDNS(w http.ResponseWriter, r *http.Request) {
 	var req config.SystemConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -135,7 +159,7 @@ type dnsTestReq struct {
 
 func (s *Server) handleTestDNS(w http.ResponseWriter, r *http.Request) {
 	var req dnsTestReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}

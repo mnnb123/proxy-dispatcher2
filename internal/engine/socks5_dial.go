@@ -58,9 +58,15 @@ func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAd
 // from the target get swallowed) — either corrupts the tunnelled TLS handshake
 // and surfaces in the browser as ERR_SSL_PROTOCOL_ERROR.
 func readConnectResponse(conn net.Conn) (string, error) {
+	return ReadConnectResponse(conn, 8192)
+}
+
+// ReadConnectResponse is readConnectResponse with a caller-supplied size cap.
+// It never reads past the "\r\n\r\n" terminator.
+func ReadConnectResponse(conn net.Conn, max int) (string, error) {
 	buf := make([]byte, 0, 256)
 	one := make([]byte, 1)
-	for len(buf) < 8192 {
+	for len(buf) < max {
 		n, err := conn.Read(one)
 		if n > 0 {
 			buf = append(buf, one[0])

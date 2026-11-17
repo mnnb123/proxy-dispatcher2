@@ -25,25 +25,44 @@ type BruteGuard struct {
 	logger      *slog.Logger
 }
 
+// defaultBanDuration is used when the configured duration is zero/negative;
+// otherwise Ban() and auto-ban would be silent no-ops (remaining <= 0).
+const defaultBanDuration = time.Hour
+
 // NewBruteGuard creates a BruteGuard from config.
 func NewBruteGuard(cfg config.AutoBanConfig, logger *slog.Logger) *BruteGuard {
-	return &BruteGuard{
-		enabled:     cfg.Enabled,
-		maxAttempts: cfg.MaxAttempts,
-		banDuration: time.Duration(cfg.BanDurationSec) * time.Second,
-		attempts:    make(map[string]*AttemptRecord),
-		logger:      logger,
+	bg := &BruteGuard{
+		attempts: make(map[string]*AttemptRecord),
+		logger:   logger,
+	}
+	bg.Reload(cfg)
+	return bg
+}
+
+// Reload applies new auto-ban settings at runtime. Existing attempt/ban
+// records are kept.
+func (bg *BruteGuard) Reload(cfg config.AutoBanConfig) {
+	bg.mu.Lock()
+	defer bg.mu.Unlock()
+	bg.enabled = cfg.Enabled
+	bg.maxAttempts = cfg.MaxAttempts
+	if bg.maxAttempts <= 0 {
+		bg.maxAttempts = 5
+	}
+	bg.banDuration = time.Duration(cfg.BanDurationSec) * time.Second
+	if bg.banDuration <= 0 {
+		bg.banDuration = defaultBanDuration
 	}
 }
 
 // RecordAndCheck increments the attempt count for clientIP and returns
 // whether the IP is now banned.
 func (bg *BruteGuard) RecordAndCheck(clientIP string) (bool, time.Duration) {
+	bg.mu.Lock()
+	defer bg.mu.Unlock()
 	if !bg.enabled {
 		return false, 0
 	}
-	bg.mu.Lock()
-	defer bg.mu.Unlock()
 
 	rec, ok := bg.attempts[clientIP]
 	if !ok {

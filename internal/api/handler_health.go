@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"proxy-dispatcher/internal/config"
@@ -13,7 +12,7 @@ func (s *Server) handleGetHealthConfig(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePostHealthConfig(w http.ResponseWriter, r *http.Request) {
 	var req config.HealthCheckConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}

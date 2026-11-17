@@ -19,7 +19,10 @@ import (
 // ConnHandler processes incoming client connections, performing protocol
 // detection, rule evaluation, and routing through proxy / direct / block.
 type ConnHandler struct {
-	cfg           *config.AppConfig
+	// resourceProxy returns the current resource proxy (nil if none). It
+	// reads a lock-free snapshot, never the shared *AppConfig.
+	resourceProxy func() *config.ProxyEntry
+	connTimeout   time.Duration
 	socks5H       *engine.Socks5Handler
 	httpH         *engine.HttpHandler
 	groupMgr      *engine.GroupManager
@@ -213,7 +216,7 @@ func (h *ConnHandler) routeDirect(ctx context.Context, buffConn *engine.Buffered
 }
 
 func (h *ConnHandler) routeResource(ctx context.Context, buffConn *engine.BufferedConn, prefixConn net.Conn, reqInfo *engine.RequestInfo, outputPort int, clientIP, proto4 string, startTime time.Time) {
-	resProxy := rules.ResolveBypassTarget("resource", h.cfg.ResourceProxy)
+	resProxy := h.resourceProxy()
 	if resProxy == nil {
 		// No resource proxy configured — fallback to direct.
 		h.routeDirect(ctx, buffConn, prefixConn, reqInfo, outputPort, clientIP, proto4, startTime)
@@ -254,7 +257,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 		proxyAddr := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
 		finalProxyAddr = proxyAddr
 
-		proxyConn, dialErr := net.DialTimeout("tcp", proxyAddr, time.Duration(h.cfg.ConnTimeout)*time.Second)
+		proxyConn, dialErr := net.DialTimeout("tcp", proxyAddr, h.connTimeout)
 		if dialErr != nil {
 			h.logger.Debug("proxy dial failed", "target", proxyAddr, "error", dialErr)
 			return dialErr
@@ -264,7 +267,11 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 			return h.proxyHTTPS(ctx, buffConn, proxyConn, reqInfo, proxy, outputPort, &finalRes)
 		}
 
-		// Plain HTTP: inject proxy auth then forward.
+		// Plain HTTP: inject proxy auth then forward. The request head is
+		// written here explicitly, so the pipe below must read from buffConn
+		// (the bytes after the head), NOT from prefixConn — prefixConn would
+		// replay the head a second time and the upstream would see two
+		// requests (or a corrupted POST body).
 		if len(reqInfo.ConsumedBytes) > 0 {
 			outBytes := reqInfo.ConsumedBytes
 			if proxy.User != "" {
@@ -275,7 +282,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 				return err
 			}
 		}
-		res, sfErr := h.sizeForwarder.Forward(ctx, prefixConn, proxyConn, reqInfo, reqInfo.ConsumedBytes, outputPort)
+		res, sfErr := h.sizeForwarder.Forward(ctx, buffConn, proxyConn, reqInfo, reqInfo.ConsumedBytes, outputPort)
 		if sfErr != nil {
 			return sfErr
 		}
@@ -305,14 +312,11 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 	}
 
 	// Read the upstream CONNECT response exactly up to the terminating
-	// \r\n\r\n. A single Read() is unsafe: the response may arrive split
-	// across segments (a short read passes the status check but leaves
-	// trailing header bytes in the socket, which then leak into the TLS
-	// stream as the client's "first server bytes" → ERR_SSL_PROTOCOL_ERROR),
-	// or contain extra headers we would otherwise discard. Reading one byte
-	// at a time stops precisely at the header boundary so the pipe that
-	// follows carries only real TLS records.
-	resp, err := readUntilHeaderEnd(proxyConn, 8192)
+	// \r\n\r\n (see engine.ReadConnectResponse for why a single Read() is
+	// unsafe here). A deadline guards against a proxy that never answers.
+	_ = proxyConn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	resp, err := engine.ReadConnectResponse(proxyConn, 8192)
+	_ = proxyConn.SetReadDeadline(time.Time{})
 	if err != nil {
 		proxyConn.Close()
 		return fmt.Errorf("read CONNECT response: %w", err)
@@ -322,12 +326,15 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 		return fmt.Errorf("upstream CONNECT failed: %s", strings.TrimSpace(resp))
 	}
 
-	if _, err := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+	if _, err := buffConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		proxyConn.Close()
 		return fmt.Errorf("write 200: %w", err)
 	}
 
-	res, sfErr := h.sizeForwarder.Forward(ctx, buffConn.Conn, proxyConn, reqInfo, nil, outputPort)
+	// Pipe via buffConn (not the raw Conn) so any client bytes that were
+	// already buffered during protocol detection / header parsing are
+	// forwarded instead of silently dropped.
+	res, sfErr := h.sizeForwarder.Forward(ctx, buffConn, proxyConn, reqInfo, nil, outputPort)
 	if sfErr != nil {
 		return sfErr
 	}
@@ -335,42 +342,14 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 	return nil
 }
 
-// readUntilHeaderEnd reads from conn one byte at a time until the HTTP header
-// terminator "\r\n\r\n" is seen, returning everything read so far. It never
-// reads past the terminator, so no subsequent (TLS) bytes are consumed. A
-// short read deadline guards against a proxy that never finishes the response.
-func readUntilHeaderEnd(conn net.Conn, max int) (string, error) {
-	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	defer conn.SetReadDeadline(time.Time{})
-
-	buf := make([]byte, 0, 256)
-	one := make([]byte, 1)
-	for len(buf) < max {
-		n, err := conn.Read(one)
-		if n > 0 {
-			buf = append(buf, one[0])
-			if len(buf) >= 4 && string(buf[len(buf)-4:]) == "\r\n\r\n" {
-				return string(buf), nil
-			}
-		}
-		if err != nil {
-			if len(buf) > 0 {
-				return string(buf), nil
-			}
-			return "", err
-		}
-	}
-	return string(buf), nil
-}
-
 // pipeDirectConn pipes data between client and remote for direct connections.
 func (h *ConnHandler) pipeDirectConn(ctx context.Context, buffConn *engine.BufferedConn, prefixConn net.Conn, remoteConn net.Conn, reqInfo *engine.RequestInfo) engine.PipeResult {
 	if reqInfo.IsHTTPS {
-		if _, err := buffConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+		if _, err := buffConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 			remoteConn.Close()
 			return engine.PipeResult{}
 		}
-		return engine.Pipe(ctx, buffConn.Conn, remoteConn, h.idleTimeout)
+		return engine.Pipe(ctx, buffConn, remoteConn, h.idleTimeout)
 	}
 	return engine.Pipe(ctx, prefixConn, remoteConn, h.idleTimeout)
 }

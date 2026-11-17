@@ -46,6 +46,11 @@ func (wm *WhitelistManager) load(cfg config.WhitelistConfig) error {
 				return fmt.Errorf("invalid CIDR %q: %w", e.IP, err)
 			}
 			cidrs = append(cidrs, ipnet)
+			if e.ExpiresAt > 0 {
+				// Keyed by the canonical network string so the match loops
+				// can look expiry up from the *net.IPNet itself.
+				temp[ipnet.String()] = e.ExpiresAt
+			}
 		default: // "single" or empty
 			exact[e.IP] = true
 		}
@@ -85,6 +90,9 @@ func (wm *WhitelistManager) IsAllowed(clientIP string) (bool, string) {
 	if parsed != nil {
 		for _, cidr := range wm.cidrNets {
 			if cidr.Contains(parsed) {
+				if exp, ok := wm.tempExpiry[cidr.String()]; ok && exp > 0 && now > exp {
+					continue
+				}
 				return true, "cidr match"
 			}
 		}
@@ -114,6 +122,9 @@ func (wm *WhitelistManager) Matches(clientIP string) bool {
 	if parsed != nil {
 		for _, cidr := range wm.cidrNets {
 			if cidr.Contains(parsed) {
+				if exp, ok := wm.tempExpiry[cidr.String()]; ok && exp > 0 && now > exp {
+					continue
+				}
 				return true
 			}
 		}
@@ -145,6 +156,9 @@ func (wm *WhitelistManager) AddEntry(entry config.WhitelistEntry) error {
 	if entry.Type == "cidr" {
 		_, ipnet, _ := net.ParseCIDR(entry.IP)
 		wm.cidrNets = append(wm.cidrNets, ipnet)
+		if entry.ExpiresAt > 0 {
+			wm.tempExpiry[ipnet.String()] = entry.ExpiresAt
+		}
 	} else {
 		wm.exactIPs[entry.IP] = true
 	}
@@ -174,16 +188,29 @@ func (wm *WhitelistManager) RemoveEntry(ip string) error {
 	wm.entries = filtered
 	delete(wm.exactIPs, ip)
 	delete(wm.tempExpiry, ip)
+	wm.rebuildCIDRsLocked()
+	return nil
+}
 
-	// Rebuild CIDR list.
+// rebuildCIDRsLocked regenerates cidrNets (and their expiry keys) from
+// wm.entries. Caller must hold wm.mu.
+func (wm *WhitelistManager) rebuildCIDRsLocked() {
 	wm.cidrNets = nil
 	for _, e := range wm.entries {
-		if e.Type == "cidr" {
-			_, ipnet, _ := net.ParseCIDR(e.IP)
-			wm.cidrNets = append(wm.cidrNets, ipnet)
+		if e.Type != "cidr" {
+			continue
+		}
+		_, ipnet, err := net.ParseCIDR(e.IP)
+		if err != nil {
+			continue
+		}
+		wm.cidrNets = append(wm.cidrNets, ipnet)
+		if e.ExpiresAt > 0 {
+			wm.tempExpiry[ipnet.String()] = e.ExpiresAt
+		} else {
+			delete(wm.tempExpiry, ipnet.String())
 		}
 	}
-	return nil
 }
 
 // Reload replaces the entire whitelist from config.
@@ -200,15 +227,27 @@ func (wm *WhitelistManager) CleanupExpired() {
 
 	now := time.Now().Unix()
 	filtered := make([]config.WhitelistEntry, 0, len(wm.entries))
+	removedCIDR := false
 	for _, e := range wm.entries {
 		if e.ExpiresAt > 0 && now > e.ExpiresAt {
 			delete(wm.exactIPs, e.IP)
 			delete(wm.tempExpiry, e.IP)
+			if e.Type == "cidr" {
+				removedCIDR = true
+				if _, ipnet, err := net.ParseCIDR(e.IP); err == nil {
+					delete(wm.tempExpiry, ipnet.String())
+				}
+			}
 			continue
 		}
 		filtered = append(filtered, e)
 	}
 	wm.entries = filtered
+	if removedCIDR {
+		// Expired CIDRs were previously only dropped from entries, leaving
+		// the live cidrNets slice (and therefore access) unchanged.
+		wm.rebuildCIDRsLocked()
+	}
 }
 
 // GetEntries returns a copy of current whitelist entries.

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net"
 	"net/http"
 	"time"
@@ -21,9 +20,8 @@ func (s *Server) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePostWhitelist(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req config.WhitelistConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -32,6 +30,10 @@ func (s *Server) handlePostWhitelist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg.Whitelist = req
+	if s.bruteGuard != nil {
+		// Auto-ban settings were persisted but never applied at runtime.
+		s.bruteGuard.Reload(req.AutoBan)
+	}
 	s.unbanWhitelisted()
 	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
 		respondError(w, http.StatusInternalServerError, "save failed")
@@ -41,15 +43,14 @@ func (s *Server) handlePostWhitelist(w http.ResponseWriter, r *http.Request) {
 }
 
 type addWhitelistReq struct {
-	IP          string `json:"ip"`
-	Note        string `json:"note"`
-	ExpiresInSec int64 `json:"expires_in_sec"`
+	IP           string `json:"ip"`
+	Note         string `json:"note"`
+	ExpiresInSec int64  `json:"expires_in_sec"`
 }
 
 func (s *Server) handleAddWhitelistIP(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req addWhitelistReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -84,9 +85,8 @@ type removeWhitelistReq struct {
 }
 
 func (s *Server) handleRemoveWhitelistIP(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req removeWhitelistReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -125,9 +125,8 @@ type banIPReq struct {
 }
 
 func (s *Server) handleBanIP(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req banIPReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}

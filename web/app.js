@@ -128,6 +128,8 @@ function initSidebar() {
         dashInterval = setInterval(loadHealthStatus, 10000);
       } else if (t === 'tab-groups') {
         loadGroups(); loadImportSources(); loadHealthConfig(); loadRetryConfig();
+      } else if (t === 'tab-session') {
+        loadSessionTab();
       } else if (t === 'tab-portmap') {
         loadGroups().then(loadPortMappings);
       } else if (t === 'tab-report') {
@@ -994,61 +996,432 @@ document.getElementById('checkNowBtn').addEventListener('click', async () => {
   setTimeout(loadHealthStatus, 2000);
 });
 
-// ── Groups ─────────────────────────────────────────────────
+// ── Groups (one port range per group, e.g. per country) ─────
+let editingGroup = null;
+
+function escH(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 async function loadGroups() {
   const r = await apiCall('GET', '/api/groups');
   if (!r.ok) return;
   const groups = r.data.groups || [];
   const container = document.getElementById('groupsList');
-  if (!groups.length) { container.innerHTML = '<p class="text-muted">No groups yet</p>'; return; }
-  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
-  groups.forEach(g => {
-    html += '<div class="card" style="padding:12px">';
-    html += '<div style="font-weight:600;color:var(--color-accent);font-size:14px">' + g.name + '</div>';
-    html += '<div class="text-sm text-muted" style="margin-top:4px">Mode: ' + g.rotation_mode + '</div>';
-    html += '<div class="text-sm text-muted">Proxies: ' + g.alive_count + '/' + g.proxy_count + ' alive</div>';
-    html += '<div class="text-sm text-muted">Ports: ' + (g.port_range||'none') + '</div>';
-    html += '<div style="margin-top:8px"><button class="btn btn-xs" onclick="editGroup(\'' + g.name + '\')">Edit</button>';
-    html += ' <button class="btn btn-xs btn-danger" style="padding:3px 8px;font-size:11px" onclick="deleteGroup(\'' + g.name + '\')">Delete</button></div>';
-    html += '</div>';
-  });
-  html += '</div>';
-  container.innerHTML = html;
+  const summary = document.getElementById('groupsSummary');
+  if (summary) {
+    const total = groups.reduce((n, g) => n + (g.proxy_count || 0), 0);
+    summary.textContent = groups.length ? '(' + groups.length + ' nhóm, ' + total + ' proxy)' : '';
+  }
   // Populate port-mapping group select.
   const sel = document.getElementById('pmGroup');
-  if (sel) sel.innerHTML = groups.map(g => '<option value="' + g.name + '">' + g.name + '</option>').join('');
+  if (sel) sel.innerHTML = groups.map(g => '<option value="' + escH(g.name) + '">' + escH(g.name) + '</option>').join('');
+  if (!container) return;
+  if (!groups.length) { container.innerHTML = '<p class="text-muted">Chưa có nhóm nào. Tạo nhóm đầu tiên ở form bên dưới.</p>'; return; }
+
+  let html = '<table class="mini-table"><tr><th>Nhóm</th><th>Dải port</th><th>Proxy / sức chứa</th><th>Còn trống</th><th>Sống</th><th>Chết</th><th></th></tr>';
+  groups.forEach((g, idx) => {
+    const ports = g.port_start ? g.port_start + ' – ' + g.port_end : '<span class="text-muted">chưa gán port</span>';
+    const cap = g.port_start ? g.proxy_count + ' / ' + g.capacity : g.proxy_count;
+    html += '<tr>';
+    html += '<td style="font-weight:600;color:var(--color-accent)">' + escH(g.name) + '</td>';
+    html += '<td>' + ports + '</td>';
+    html += '<td>' + cap + '</td>';
+    html += '<td>' + (g.port_start ? g.free : '—') + '</td>';
+    html += '<td>' + (g.alive_count || 0) + '</td>';
+    html += '<td>' + (g.dead_count || 0) + '</td>';
+    html += '<td style="white-space:nowrap">';
+    html += '<button class="btn btn-xs" data-gact="view" data-gidx="' + idx + '">Xem</button> ';
+    html += '<button class="btn btn-xs" data-gact="copy" data-gidx="' + idx + '">Copy output</button> ';
+    html += '<button class="btn btn-xs" data-gact="edit" data-gidx="' + idx + '">Sửa</button> ';
+    html += '<button class="btn btn-xs btn-danger" style="padding:3px 8px;font-size:11px" data-gact="del" data-gidx="' + idx + '">Xoá</button>';
+    html += '</td></tr>';
+  });
+  html += '</table>';
+  container.innerHTML = html;
+  container.querySelectorAll('button[data-gact]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const g = groups[parseInt(btn.dataset.gidx, 10)];
+      if (!g) return;
+      const act = btn.dataset.gact;
+      if (act === 'view') viewGroup(g.name);
+      else if (act === 'copy') copyGroupOutput(g.name);
+      else if (act === 'edit') editGroup(g);
+      else if (act === 'del') deleteGroup(g.name);
+    });
+  });
 }
 
-document.getElementById('newGroupBtn').addEventListener('click', async () => {
-  const name = prompt('Group name:');
-  if (!name) return;
-  const mode = prompt('Rotation mode (roundrobin/random/sticky/leastconn/weighted):', 'roundrobin');
-  const ptype = prompt('Proxy type (http/socks5):', 'http');
-  const rawText = prompt('Proxy list (host:port per line):');
-  if (rawText === null) return;
-  const r = await apiCall('POST', '/api/groups', { name, rotation_mode: mode, proxy_type: ptype, raw_text: rawText });
-  if (!r.ok) { alert(r.data.error || 'Failed'); return; }
-  loadGroups();
-});
+async function fetchGroupProxies(name) {
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/proxies');
+  if (!r.ok) { setMsg('grpMsg', r.data.error || 'Không tải được nhóm', true); return null; }
+  return r.data;
+}
 
-async function editGroup(name) {
-  const rawText = prompt('New proxy list for ' + name + ' (blank = keep):');
-  const mode = prompt('Rotation mode (blank = keep):', '');
-  const body = {};
-  if (rawText) { body.raw_text = rawText; body.proxy_type = 'http'; }
-  if (mode) body.rotation_mode = mode;
-  if (Object.keys(body).length === 0) return;
-  const r = await apiCall('PUT', '/api/groups/' + encodeURIComponent(name), body);
-  if (!r.ok) { alert(r.data.error || 'Failed'); return; }
+async function viewGroup(name) {
+  const d = await fetchGroupProxies(name);
+  const box = document.getElementById('groupDetail');
+  if (!d || !box) return;
+  const rows = d.proxies || [];
+  let html = '<h3 style="margin-bottom:6px">' + escH(name) + ' — ' + rows.length + ' proxy ';
+  html += '<button class="btn btn-xs" id="groupDetailClose">Đóng</button></h3>';
+  if (!rows.length) { html += '<p class="text-muted">Nhóm chưa có proxy.</p>'; }
+  else {
+    html += '<div style="max-height:360px;overflow:auto"><table class="mini-table"><tr><th>#</th><th>Output (port trên VPS)</th><th>Proxy gốc</th><th>Loại</th><th>Trạng thái</th><th>Độ trễ</th></tr>';
+    rows.forEach(p => {
+      const dot = p.status === 'alive' ? 'var(--color-success)' : p.status === 'slow' ? 'var(--color-warning)' : p.status === 'dead' ? 'var(--color-danger)' : 'var(--text-muted)';
+      html += '<tr><td>' + (p.index + 1) + '</td>';
+      html += '<td>' + (p.output_addr ? escH(p.output_addr) : '<span class="text-muted">ngoài dải port</span>') + '</td>';
+      html += '<td>' + escH(p.host) + ':' + p.port + (p.user ? ' <span class="text-muted">(' + escH(p.user) + ')</span>' : '') + '</td>';
+      html += '<td>' + escH(p.type) + '</td>';
+      html += '<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dot + ';margin-right:6px"></span>' + escH(p.status || 'unknown') + '</td>';
+      html += '<td>' + (p.latency_ms || 0) + 'ms</td></tr>';
+    });
+    html += '</table></div>';
+  }
+  box.innerHTML = html;
+  document.getElementById('groupDetailClose').addEventListener('click', () => { box.innerHTML = ''; });
+}
+
+async function copyGroupOutput(name) {
+  const d = await fetchGroupProxies(name);
+  if (!d) return;
+  const lines = (d.proxies || []).filter(p => p.output_addr).map(p => p.output_addr);
+  if (!lines.length) { setMsg('grpMsg', 'Nhóm ' + name + ' chưa có port output (chưa gán dải port hoặc chưa có proxy)', true); return; }
+  try {
+    await copyToClipboard(lines.join('\n'));
+    setMsg('grpMsg', 'Đã copy ' + lines.length + ' output của nhóm ' + name, false);
+  } catch (e) {
+    setMsg('grpMsg', 'Copy thất bại', true);
+  }
+}
+
+function resetGroupForm() {
+  editingGroup = null;
+  document.getElementById('groupFormTitle').textContent = 'Tạo nhóm mới';
+  const nameEl = document.getElementById('grpName');
+  nameEl.value = ''; nameEl.readOnly = false;
+  document.getElementById('grpPortStart').value = '';
+  document.getElementById('grpPortEnd').value = '';
+  document.getElementById('grpList').value = '';
+  document.getElementById('grpListLabel').textContent = 'Danh sách proxy (mỗi dòng 1 proxy: host:port, host:port:user:pass hoặc user:pass@host:port)';
+  document.getElementById('grpSaveBtn').textContent = 'Tạo nhóm';
+  document.getElementById('grpAppendBtn').style.display = 'none';
+  document.getElementById('grpCancelBtn').style.display = 'none';
+}
+
+function editGroup(g) {
+  editingGroup = g.name;
+  document.getElementById('groupFormTitle').textContent = 'Sửa nhóm ' + g.name;
+  const nameEl = document.getElementById('grpName');
+  nameEl.value = g.name; nameEl.readOnly = true;
+  document.getElementById('grpPortStart').value = g.port_start || '';
+  document.getElementById('grpPortEnd').value = g.port_end || '';
+  document.getElementById('grpList').value = '';
+  document.getElementById('grpListLabel').textContent = 'Danh sách proxy — để trống nếu chỉ đổi dải port. "Lưu" sẽ THAY toàn bộ danh sách, "Thêm vào cuối" giữ nguyên proxy cũ và port của chúng.';
+  document.getElementById('grpSaveBtn').textContent = 'Lưu (thay danh sách)';
+  document.getElementById('grpAppendBtn').style.display = '';
+  document.getElementById('grpCancelBtn').style.display = '';
+  document.getElementById('groupFormTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function submitGroup(append) {
+  const name = document.getElementById('grpName').value.trim();
+  const ps = parseInt(document.getElementById('grpPortStart').value, 10) || 0;
+  const pe = parseInt(document.getElementById('grpPortEnd').value, 10) || 0;
+  const rawText = document.getElementById('grpList').value;
+  const ptype = document.getElementById('grpType').value;
+  if (!name) { setMsg('grpMsg', 'Chưa nhập tên nhóm', true); return; }
+  if (pe && !ps) { setMsg('grpMsg', 'Có port kết thúc thì phải có port bắt đầu', true); return; }
+  if (ps && pe && pe < ps) { setMsg('grpMsg', 'Port kết thúc nhỏ hơn port bắt đầu', true); return; }
+
+  const body = { proxy_type: ptype };
+  if (ps) { body.port_start = ps; if (pe) body.port_end = pe; }
+  let r;
+  if (editingGroup) {
+    if (append && !rawText.trim()) { setMsg('grpMsg', 'Chưa có proxy nào để thêm', true); return; }
+    if (rawText.trim()) { body.raw_text = rawText; body.append = !!append; }
+    if (!append && rawText.trim() && !confirm('Thay toàn bộ danh sách proxy của nhóm ' + editingGroup + '?')) return;
+    r = await apiCall('PUT', '/api/groups/' + encodeURIComponent(editingGroup), body);
+  } else {
+    body.name = name; body.raw_text = rawText; body.rotation_mode = 'roundrobin';
+    r = await apiCall('POST', '/api/groups', body);
+  }
+  if (!r.ok) { setMsg('grpMsg', r.data.error || 'Thất bại', true); return; }
+  let msg = 'Đã lưu nhóm ' + name + ': ' + (r.data.count || 0) + ' proxy';
+  if (r.data.added !== undefined && append) msg = 'Đã thêm ' + r.data.added + ' proxy vào ' + name + ' (tổng ' + r.data.count + ')';
+  if (r.data.skipped) msg += ', bỏ qua ' + r.data.skipped + ' dòng lỗi/trùng';
+  setMsg('grpMsg', msg, false);
+  resetGroupForm();
   loadGroups();
 }
+
+document.getElementById('grpSaveBtn').addEventListener('click', () => submitGroup(false));
+document.getElementById('grpAppendBtn').addEventListener('click', () => submitGroup(true));
+document.getElementById('grpCancelBtn').addEventListener('click', resetGroupForm);
 
 async function deleteGroup(name) {
-  if (!confirm('Delete group "' + name + '"?')) return;
+  if (!confirm('Xoá nhóm "' + name + '" cùng dải port của nó?')) return;
   const r = await apiCall('DELETE', '/api/groups/' + encodeURIComponent(name));
-  if (!r.ok) { alert(r.data.error || 'Failed'); return; }
+  if (!r.ok) { setMsg('grpMsg', r.data.error || 'Xoá thất bại', true); return; }
+  if (editingGroup === name) resetGroupForm();
+  const box = document.getElementById('groupDetail');
+  if (box) box.innerHTML = '';
+  setMsg('grpMsg', 'Đã xoá nhóm ' + name, false);
   loadGroups();
 }
+
+// ── Session proxies (groups with list history) ─────────────
+let sessGroups = [];
+let sessCur = null; // { name, port_start, port_end, proxies: [...] }
+
+function sessName() { return document.getElementById('sessGroup').value; }
+
+function fmtTime(unix) {
+  if (!unix) return '';
+  const d = new Date(unix * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+async function loadSessionTab() {
+  const r = await apiCall('GET', '/api/groups');
+  if (!r.ok) return;
+  const all = r.data.groups || [];
+  sessGroups = all.filter(g => g.keep_history);
+  const sel = document.getElementById('sessGroup');
+  const prev = sel.value;
+  sel.innerHTML = sessGroups.map(g => '<option value="' + escH(g.name) + '">' + escH(g.name) + '</option>').join('');
+  if (prev && sessGroups.some(g => g.name === prev)) sel.value = prev;
+  const others = all.filter(g => !g.keep_history);
+  document.getElementById('sessEnableSel').innerHTML = others.map(g => '<option value="' + escH(g.name) + '">' + escH(g.name) + '</option>').join('');
+  if (!sessGroups.length) {
+    sessCur = null;
+    document.getElementById('sessInfo').textContent = 'Chưa có nhóm phiên nào. Bấm "+ Nhóm phiên mới" để tạo, hoặc bật lịch sử cho một nhóm có sẵn.';
+    document.getElementById('sessNewBox').style.display = '';
+    ['sessCurrent', 'sessHistory', 'sessSnapshot', 'sessSearchResult'].forEach(id => { document.getElementById(id).innerHTML = ''; });
+    document.getElementById('sessCurCount').textContent = '';
+    return;
+  }
+  await loadSessionGroup();
+}
+
+async function loadSessionGroup() {
+  const name = sessName();
+  if (!name) return;
+  document.getElementById('sessSnapshot').innerHTML = '';
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/proxies');
+  if (!r.ok) { setMsg('sessMsg', r.data.error || 'Không tải được nhóm', true); return; }
+  sessCur = r.data;
+  const rows = sessCur.proxies || [];
+  const g = sessGroups.find(x => x.name === name) || {};
+  const withIP = rows.filter(p => p.external_ip).length;
+  let info = 'Dải port: ' + (sessCur.port_start ? sessCur.port_start + ' – ' + sessCur.port_end + ' (' + (g.capacity || 0) + ' port)' : 'chưa gán');
+  info += ' · ' + rows.length + ' proxy · ' + withIP + ' đã có IP public';
+  document.getElementById('sessInfo').textContent = info;
+  document.getElementById('sessCurCount').textContent = '(' + rows.length + ')';
+
+  const box = document.getElementById('sessCurrent');
+  if (!rows.length) { box.innerHTML = '<p class="text-muted">Nhóm chưa có proxy. Dán list ở ô "Thay list".</p>'; }
+  else {
+    let html = '<div style="max-height:380px;overflow:auto"><table class="mini-table"><tr><th>Port output</th><th>Proxy gốc</th><th>User</th><th>IP public</th><th>Trạng thái</th></tr>';
+    rows.forEach(p => {
+      const dot = p.status === 'alive' ? 'var(--color-success)' : p.status === 'slow' ? 'var(--color-warning)' : p.status === 'dead' ? 'var(--color-danger)' : 'var(--text-muted)';
+      html += '<tr><td>' + (p.output_port || '<span class="text-muted">ngoài dải</span>') + '</td>';
+      html += '<td>' + escH(p.host) + ':' + p.port + '</td>';
+      html += '<td>' + escH(p.user || '') + '</td>';
+      html += '<td>' + (p.external_ip ? escH(p.external_ip) : '<span class="text-muted">chưa kiểm tra</span>') + '</td>';
+      html += '<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dot + ';margin-right:6px"></span>' + escH(p.status || 'unknown') + '</td></tr>';
+    });
+    html += '</table></div>';
+    box.innerHTML = html;
+  }
+  await loadSessionHistory();
+}
+
+async function loadSessionHistory() {
+  const name = sessName();
+  const box = document.getElementById('sessHistory');
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/history');
+  if (!r.ok) { box.innerHTML = '<p class="text-muted">' + escH(r.data.error || 'Không tải được lịch sử') + '</p>'; return; }
+  const snaps = r.data.snapshots || [];
+  if (!snaps.length) { box.innerHTML = '<p class="text-muted">Chưa có list nào trong lịch sử. List cũ sẽ xuất hiện ở đây sau lần thay list đầu tiên.</p>'; return; }
+  const reasons = { replace: 'Thay list', restore: 'Trước khi khôi phục', swap: 'Bị thay ở 1 port' };
+  let html = '<div style="max-height:300px;overflow:auto"><table class="mini-table"><tr><th>Thời gian</th><th>Lý do</th><th>Số proxy</th><th>Có IP public</th><th></th></tr>';
+  snaps.forEach((sn, i) => {
+    html += '<tr><td>' + fmtTime(sn.at) + '</td><td>' + (reasons[sn.reason] || escH(sn.reason)) + '</td><td>' + sn.count + '</td><td>' + sn.with_ip + '</td>';
+    html += '<td style="white-space:nowrap"><button class="btn btn-xs" data-sact="view" data-sidx="' + i + '">Xem</button> ';
+    html += '<button class="btn btn-xs" data-sact="restore" data-sidx="' + i + '">Khôi phục list này</button></td></tr>';
+  });
+  html += '</table></div>';
+  box.innerHTML = html;
+  box.querySelectorAll('button[data-sact]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const sn = snaps[parseInt(btn.dataset.sidx, 10)];
+      if (!sn) return;
+      if (btn.dataset.sact === 'view') viewSnapshot(sn);
+      else restoreSnapshot(sn);
+    });
+  });
+}
+
+// defaultAttachPort: the port the proxy used to hold if it is still inside
+// the range and not past the end of the current list, else the next free one.
+function defaultAttachPort(oldPort) {
+  if (!sessCur || !sessCur.port_start) return '';
+  const count = (sessCur.proxies || []).length;
+  const nextFree = sessCur.port_start + count;
+  if (oldPort && oldPort >= sessCur.port_start && oldPort <= sessCur.port_end && oldPort <= nextFree) return oldPort;
+  return nextFree <= sessCur.port_end ? nextFree : sessCur.port_start;
+}
+
+// attachCell renders the "port + Gắn" control for one history row.
+function attachCell(snapshotId, index, oldPort) {
+  return '<input type="number" style="width:90px;display:inline-block" value="' + defaultAttachPort(oldPort) + '" data-aport> ' +
+    '<button class="btn btn-xs btn-primary" data-attach data-snap="' + escH(snapshotId) + '" data-row="' + index + '">Gắn</button>';
+}
+
+function wireAttach(container) {
+  container.querySelectorAll('button[data-attach]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const input = btn.parentElement.querySelector('input[data-aport]');
+      const port = parseInt(input.value, 10);
+      if (!port) { setMsg('sessMsg', 'Chưa nhập port', true); return; }
+      const cur = (sessCur && sessCur.proxies || []).find(p => p.output_port === port);
+      const q = cur ? 'Port ' + port + ' đang gắn ' + cur.host + ':' + cur.port + '. Thay bằng proxy này? (proxy đang gắn sẽ được lưu vào lịch sử)' : 'Gắn proxy này vào port ' + port + '?';
+      if (!confirm(q)) return;
+      const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(sessName()) + '/attach',
+        { id: btn.dataset.snap, index: parseInt(btn.dataset.row, 10), output_port: port });
+      if (!r.ok) { setMsg('sessMsg', r.data.error || 'Gắn thất bại', true); return; }
+      setMsg('sessMsg', 'Đã gắn vào port ' + port + (r.data.replaced ? ' (thay cho ' + r.data.replaced + ')' : ''), false);
+      await loadSessionGroup();
+    });
+  });
+}
+
+async function viewSnapshot(sn) {
+  const box = document.getElementById('sessSnapshot');
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(sessName()) + '/history?id=' + encodeURIComponent(sn.id));
+  if (!r.ok) { setMsg('sessMsg', r.data.error || 'Không tải được list', true); return; }
+  const rows = r.data.proxies || [];
+  let html = '<h3 style="margin-bottom:6px">List lúc ' + fmtTime(sn.at) + ' — ' + rows.length + ' proxy <button class="btn btn-xs" id="sessSnapClose">Đóng</button></h3>';
+  html += '<div style="max-height:380px;overflow:auto"><table class="mini-table"><tr><th>Port cũ</th><th>Proxy gốc</th><th>User</th><th>IP public</th><th>Gắn lại vào port</th></tr>';
+  rows.forEach(p => {
+    html += '<tr><td>' + (p.output_port || '—') + '</td><td>' + escH(p.host) + ':' + p.port + '</td><td>' + escH(p.user || '') + '</td>';
+    html += '<td>' + (p.external_ip ? escH(p.external_ip) : '<span class="text-muted">không ghi nhận</span>') + '</td>';
+    html += '<td style="white-space:nowrap">' + attachCell(sn.id, p.index, p.output_port) + '</td></tr>';
+  });
+  html += '</table></div>';
+  box.innerHTML = html;
+  document.getElementById('sessSnapClose').addEventListener('click', () => { box.innerHTML = ''; });
+  wireAttach(box);
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+async function restoreSnapshot(sn) {
+  if (!confirm('Khôi phục list lúc ' + fmtTime(sn.at) + ' (' + sn.count + ' proxy)? List hiện tại sẽ được lưu vào lịch sử.')) return;
+  const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(sessName()) + '/history/restore', { id: sn.id });
+  if (!r.ok) { setMsg('sessMsg', r.data.error || 'Khôi phục thất bại', true); return; }
+  setMsg('sessMsg', 'Đã khôi phục ' + r.data.count + ' proxy', false);
+  await loadSessionGroup();
+}
+
+async function sessSubmitList(append) {
+  const name = sessName();
+  if (!name) { setMsg('sessMsg', 'Chưa có nhóm phiên', true); return; }
+  const rawText = document.getElementById('sessList').value;
+  if (!rawText.trim()) { setMsg('sessMsg', 'Chưa dán list', true); return; }
+  const count = (sessCur && sessCur.proxies || []).length;
+  if (!append && count && !confirm('Thay ' + count + ' proxy hiện tại của nhóm ' + name + ' bằng list mới? List cũ được lưu vào lịch sử.')) return;
+  const r = await apiCall('PUT', '/api/groups/' + encodeURIComponent(name),
+    { raw_text: rawText, proxy_type: document.getElementById('sessType').value, append: !!append });
+  if (!r.ok) { setMsg('sessMsg', r.data.error || 'Thất bại', true); return; }
+  let msg = append ? 'Đã thêm ' + r.data.added + ' proxy (tổng ' + r.data.count + ')' : 'Đã thay list: ' + r.data.count + ' proxy';
+  if (r.data.skipped) msg += ', bỏ qua ' + r.data.skipped + ' dòng lỗi/trùng';
+  setMsg('sessMsg', msg, false);
+  document.getElementById('sessList').value = '';
+  await loadSessionGroup();
+}
+
+async function sessSearch() {
+  const q = document.getElementById('sessSearch').value.trim();
+  const box = document.getElementById('sessSearchResult');
+  if (!sessName()) return;
+  if (q.length < 3) { box.innerHTML = '<p class="text-muted">Nhập ít nhất 3 ký tự.</p>'; return; }
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(sessName()) + '/search?ip=' + encodeURIComponent(q));
+  if (!r.ok) { box.innerHTML = '<p class="text-muted">' + escH(r.data.error || 'Tìm thất bại') + '</p>'; return; }
+  const hits = r.data.hits || [];
+  if (!hits.length) { box.innerHTML = '<p class="text-muted">Không tìm thấy. IP public chỉ có khi proxy đã được kiểm tra (nút "Kiểm tra IP public") trước lúc thay list.</p>'; return; }
+  let html = '<table class="mini-table"><tr><th>Ở đâu</th><th>Port</th><th>Proxy gốc</th><th>User</th><th>IP public</th><th>Gắn lại vào port</th></tr>';
+  hits.forEach(h => {
+    const where = h.where === 'current' ? '<b>Đang dùng</b>' : 'Lịch sử ' + fmtTime(h.at);
+    html += '<tr><td>' + where + '</td><td>' + (h.output_port || '—') + '</td><td>' + escH(h.host) + ':' + h.port + '</td><td>' + escH(h.user || '') + '</td>';
+    html += '<td>' + escH(h.external_ip || '') + '</td>';
+    html += '<td style="white-space:nowrap">' + (h.where === 'history' ? attachCell(h.snapshot_id, h.index, h.output_port) : '<span class="text-muted">đang ở port ' + (h.output_port || '?') + '</span>') + '</td></tr>';
+  });
+  html += '</table>';
+  if (r.data.truncated) html += '<p class="text-muted text-sm">Quá nhiều kết quả, chỉ hiện 200 dòng đầu. Nhập IP đầy đủ hơn.</p>';
+  box.innerHTML = html;
+  wireAttach(box);
+}
+
+document.getElementById('sessGroup').addEventListener('change', () => { document.getElementById('sessSearchResult').innerHTML = ''; loadSessionGroup(); });
+document.getElementById('sessReplaceBtn').addEventListener('click', () => sessSubmitList(false));
+document.getElementById('sessAppendBtn').addEventListener('click', () => sessSubmitList(true));
+document.getElementById('sessSearchBtn').addEventListener('click', sessSearch);
+document.getElementById('sessSearch').addEventListener('keydown', e => { if (e.key === 'Enter') sessSearch(); });
+document.getElementById('sessNewToggle').addEventListener('click', () => {
+  const b = document.getElementById('sessNewBox');
+  b.style.display = b.style.display === 'none' ? '' : 'none';
+});
+
+document.getElementById('sessCopyBtn').addEventListener('click', async () => {
+  const lines = (sessCur && sessCur.proxies || []).filter(p => p.output_addr).map(p => p.output_addr);
+  if (!lines.length) { setMsg('sessMsg', 'Nhóm chưa có port output', true); return; }
+  try { await copyToClipboard(lines.join('\n')); setMsg('sessMsg', 'Đã copy ' + lines.length + ' output', false); }
+  catch (e) { setMsg('sessMsg', 'Copy thất bại', true); }
+});
+
+document.getElementById('sessCheckBtn').addEventListener('click', async () => {
+  const name = sessName();
+  if (!name) return;
+  const btn = document.getElementById('sessCheckBtn');
+  btn.disabled = true; btn.textContent = 'Đang kiểm tra…';
+  try {
+    const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(name) + '/check-ip');
+    if (!r.ok) { setMsg('sessMsg', r.data.error || 'Kiểm tra thất bại', true); return; }
+    setMsg('sessMsg', 'Đã kiểm tra ' + r.data.checked + ' proxy: ' + r.data.alive + ' sống, ' + r.data.with_ip + ' có IP public', false);
+    await loadSessionGroup();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Kiểm tra IP public';
+  }
+});
+
+document.getElementById('sessNewBtn').addEventListener('click', async () => {
+  const name = document.getElementById('sessNewName').value.trim();
+  const ps = parseInt(document.getElementById('sessNewStart').value, 10) || 0;
+  const pe = parseInt(document.getElementById('sessNewEnd').value, 10) || 0;
+  if (!name || !ps || !pe) { setMsg('sessMsg', 'Cần tên nhóm, port bắt đầu và port kết thúc', true); return; }
+  const r = await apiCall('POST', '/api/groups', { name, port_start: ps, port_end: pe, raw_text: '', keep_history: true });
+  if (!r.ok) { setMsg('sessMsg', r.data.error || 'Tạo thất bại', true); return; }
+  setMsg('sessMsg', 'Đã tạo nhóm phiên ' + name, false);
+  document.getElementById('sessNewBox').style.display = 'none';
+  await loadSessionTab();
+  document.getElementById('sessGroup').value = name;
+  await loadSessionGroup();
+});
+
+document.getElementById('sessEnableBtn').addEventListener('click', async () => {
+  const name = document.getElementById('sessEnableSel').value;
+  if (!name) { setMsg('sessMsg', 'Không còn nhóm nào để bật', true); return; }
+  const r = await apiCall('PUT', '/api/groups/' + encodeURIComponent(name), { keep_history: true });
+  if (!r.ok) { setMsg('sessMsg', r.data.error || 'Thất bại', true); return; }
+  setMsg('sessMsg', 'Đã bật lịch sử cho nhóm ' + name, false);
+  document.getElementById('sessNewBox').style.display = 'none';
+  await loadSessionTab();
+  document.getElementById('sessGroup').value = name;
+  await loadSessionGroup();
+});
 
 // ── Port Mappings ──────────────────────────────────────────
 let portMappings = [];
@@ -1095,7 +1468,8 @@ document.getElementById('addPMBtn').addEventListener('click', () => {
 document.getElementById('savePMBtn').addEventListener('click', async () => {
   const r = await apiCall('POST', '/api/port-mappings', { mappings: portMappings });
   if (!r.ok) { setMsg('pmMsg', r.data.error || 'Failed', true); return; }
-  setMsg('pmMsg', 'Saved — restart required', false);
+  setMsg('pmMsg', 'Saved & applied', false);
+  loadGroups();
 });
 
 // ── Import Sources ─────────────────────────────────────────

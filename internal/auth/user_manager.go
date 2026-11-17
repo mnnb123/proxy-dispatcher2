@@ -59,22 +59,35 @@ func NewUserManager(users []config.UserAccount, logger *slog.Logger) *UserManage
 
 // Authenticate validates a username/password pair without checking TOTP.
 func (um *UserManager) Authenticate(username, password string) (*config.UserAccount, error) {
+	key := strings.ToLower(username)
 	um.mu.RLock()
-	u, ok := um.users[strings.ToLower(username)]
+	u, ok := um.users[key]
+	var disabled bool
+	var hash string
+	if ok {
+		disabled = u.Disabled
+		hash = u.PassHash
+	}
 	um.mu.RUnlock()
 	if !ok {
 		return nil, errors.New("invalid credentials")
 	}
-	if u.Disabled {
+	if disabled {
 		return nil, errors.New("user disabled")
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PassHash), []byte(password)); err != nil {
+	// bcrypt is deliberately slow; keep it outside the lock.
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
 		return nil, errors.New("invalid credentials")
 	}
 	um.mu.Lock()
+	defer um.mu.Unlock()
+	u, ok = um.users[key]
+	if !ok || u.Disabled {
+		return nil, errors.New("invalid credentials")
+	}
 	u.LastLogin = time.Now().Unix()
-	um.mu.Unlock()
-	return u, nil
+	cp := *u
+	return &cp, nil
 }
 
 // CreateUser registers a new user.

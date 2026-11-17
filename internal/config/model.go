@@ -38,6 +38,9 @@ type ProxyGroup struct {
 	Proxies      []ProxyEntry `json:"proxies"`
 	RotationMode string       `json:"rotation_mode"`
 	StickyTTLSec int          `json:"sticky_ttl_sec"`
+	// KeepHistory marks a "session" group: every replaced list is archived
+	// (with recorded public IPs) so it can be searched and re-attached.
+	KeepHistory bool `json:"keep_history,omitempty"`
 }
 
 // PortMapping binds a port range to a group name.

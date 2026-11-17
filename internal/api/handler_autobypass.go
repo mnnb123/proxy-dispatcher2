@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"strings"
@@ -34,11 +33,10 @@ func (s *Server) handleAutoBypassClear(w http.ResponseWriter, r *http.Request) {
 
 // handleAddForceProxy adds a single domain to Force Proxy and removes it from Bypass Rules.
 func (s *Server) handleAddForceProxy(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req struct {
 		Domain string `json:"domain"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Domain == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Domain == "" {
 		respondError(w, http.StatusBadRequest, "missing domain")
 		return
 	}
@@ -72,9 +70,8 @@ func (s *Server) handleAddForceProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePostAutoBypass(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req config.AutoBypassConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -102,9 +99,8 @@ type postForceProxyReq struct {
 }
 
 func (s *Server) handlePostForceProxy(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req postForceProxyReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -158,7 +154,7 @@ func (s *Server) handlePostForceProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"count":           len(rules),
-		"removed_bypass":  removed,
+		"count":          len(rules),
+		"removed_bypass": removed,
 	})
 }

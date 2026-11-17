@@ -20,10 +20,23 @@ type CheckResult struct {
 	CheckedAt  int64
 }
 
+// Group is the health checker's view of a proxy group. Proxies are the
+// engine's live *config.ProxyEntry pointers, so status/latency/weight
+// written by the checker are visible to the rotators and the API.
+type Group struct {
+	Name    string
+	Proxies []*config.ProxyEntry
+}
+
+// GroupProvider returns the current set of groups to probe. It is called
+// at the start of every check round so runtime changes (imports, reloads)
+// are picked up without an explicit update call.
+type GroupProvider func() []Group
+
 // HealthChecker runs periodic health checks against groups of proxies.
 type HealthChecker struct {
 	cfg            config.HealthCheckConfig
-	groups         []*config.ProxyGroup
+	provider       GroupProvider
 	semaphore      chan struct{}
 	ticker         *time.Ticker
 	OnStatusChange func(*config.ProxyEntry, string, string)
@@ -32,15 +45,18 @@ type HealthChecker struct {
 	mu             sync.RWMutex
 }
 
-// NewHealthChecker constructs a HealthChecker from config + groups.
-func NewHealthChecker(cfg config.HealthCheckConfig, groups []*config.ProxyGroup, logger *slog.Logger) *HealthChecker {
+// NewHealthChecker constructs a HealthChecker from config + a group provider.
+func NewHealthChecker(cfg config.HealthCheckConfig, provider GroupProvider, logger *slog.Logger) *HealthChecker {
 	mc := cfg.MaxConcurrent
 	if mc <= 0 {
 		mc = 20
 	}
+	if provider == nil {
+		provider = func() []Group { return nil }
+	}
 	return &HealthChecker{
 		cfg:       cfg,
-		groups:    groups,
+		provider:  provider,
 		semaphore: make(chan struct{}, mc),
 		stopCh:    make(chan struct{}),
 		logger:    logger,
@@ -72,15 +88,22 @@ func (hc *HealthChecker) runLoop() {
 	}
 }
 
-func (hc *HealthChecker) runAllChecks() {
+func (hc *HealthChecker) groups() []Group {
 	hc.mu.RLock()
-	groups := hc.groups
+	provider := hc.provider
 	hc.mu.RUnlock()
+	return provider()
+}
+
+func (hc *HealthChecker) runAllChecks() {
+	groups := hc.groups()
 
 	var wg sync.WaitGroup
 	for _, g := range groups {
-		for i := range g.Proxies {
-			p := &g.Proxies[i]
+		for _, p := range g.Proxies {
+			if p == nil {
+				continue
+			}
 			hc.semaphore <- struct{}{}
 			wg.Add(1)
 			go func(proxy *config.ProxyEntry) {
@@ -92,7 +115,7 @@ func (hc *HealthChecker) runAllChecks() {
 		}
 	}
 	wg.Wait()
-	hc.recalculateWeights()
+	hc.recalculateWeights(groups)
 }
 
 func (hc *HealthChecker) checkOne(proxy *config.ProxyEntry) CheckResult {
@@ -144,13 +167,12 @@ func (hc *HealthChecker) applyResult(proxy *config.ProxyEntry, res CheckResult) 
 	}
 }
 
-func (hc *HealthChecker) recalculateWeights() {
-	hc.mu.RLock()
-	groups := hc.groups
-	hc.mu.RUnlock()
+func (hc *HealthChecker) recalculateWeights(groups []Group) {
 	for _, g := range groups {
-		for i := range g.Proxies {
-			p := &g.Proxies[i]
+		for _, p := range g.Proxies {
+			if p == nil {
+				continue
+			}
 			if p.Status == "dead" {
 				p.Weight = 0
 				continue
@@ -185,15 +207,15 @@ func (hc *HealthChecker) Stop() {
 
 // CheckNow runs all checks synchronously and returns their results.
 func (hc *HealthChecker) CheckNow() []CheckResult {
-	hc.mu.RLock()
-	groups := hc.groups
-	hc.mu.RUnlock()
+	groups := hc.groups()
 	var results []CheckResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, g := range groups {
-		for i := range g.Proxies {
-			p := &g.Proxies[i]
+		for _, p := range g.Proxies {
+			if p == nil {
+				continue
+			}
 			hc.semaphore <- struct{}{}
 			wg.Add(1)
 			go func(proxy *config.ProxyEntry) {
@@ -209,13 +231,43 @@ func (hc *HealthChecker) CheckNow() []CheckResult {
 		}
 	}
 	wg.Wait()
-	hc.recalculateWeights()
+	hc.recalculateWeights(groups)
 	return results
 }
 
-// UpdateGroups swaps the tracked groups atomically.
-func (hc *HealthChecker) UpdateGroups(groups []*config.ProxyGroup) {
+// CheckProxies probes exactly the given proxies now (regardless of whether
+// periodic checking is enabled) and applies the results to them.
+func (hc *HealthChecker) CheckProxies(proxies []*config.ProxyEntry) []CheckResult {
+	results := make([]CheckResult, 0, len(proxies))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, p := range proxies {
+		if p == nil {
+			continue
+		}
+		hc.semaphore <- struct{}{}
+		wg.Add(1)
+		go func(proxy *config.ProxyEntry) {
+			defer wg.Done()
+			defer func() { <-hc.semaphore }()
+			res := hc.checkOne(proxy)
+			res.OldStatus = proxy.Status
+			hc.applyResult(proxy, res)
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}(p)
+	}
+	wg.Wait()
+	return results
+}
+
+// SetGroupProvider replaces the group provider.
+func (hc *HealthChecker) SetGroupProvider(p GroupProvider) {
+	if p == nil {
+		return
+	}
 	hc.mu.Lock()
-	hc.groups = groups
+	hc.provider = p
 	hc.mu.Unlock()
 }

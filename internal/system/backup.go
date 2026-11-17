@@ -57,19 +57,33 @@ func safeFilename(name string) bool {
 	return true
 }
 
+// copyFile copies src to dst atomically (temp file + rename) so a crash
+// mid-copy can never leave a truncated config.json behind.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	data, err := io.ReadAll(in)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	return writeFileAtomic(dst, data, 0o600)
+}
+
+// writeFileAtomic writes data to path via a temp file and rename.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		// Rename can fail on some Windows setups; fall back to a direct write.
+		_ = os.Remove(tmp)
+		return os.WriteFile(path, data, perm)
+	}
+	return nil
 }
 
 // CreateBackup copies the current config file into backupDir.
@@ -175,7 +189,7 @@ func (bm *BackupManager) ImportConfig(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(bm.configPath, out, 0o600)
+	return writeFileAtomic(bm.configPath, out, 0o600)
 }
 
 func (bm *BackupManager) listLocked() []BackupInfo {

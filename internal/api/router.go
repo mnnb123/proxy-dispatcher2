@@ -4,6 +4,8 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"proxy-dispatcher/internal/auth"
@@ -21,17 +23,22 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	cfg           *config.AppConfig
-	cfgPath       string
+	cfg     *config.AppConfig
+	cfgPath string
+	// cfgMu guards *cfg. ServeHTTP takes it for every request (read lock
+	// for GET/HEAD, write lock for mutating methods), so handlers access
+	// s.cfg freely. Code that runs outside a handler's lock (login, the
+	// WebSocket, main.go callbacks) must take it explicitly.
+	cfgMu         *sync.RWMutex
 	rotator       engine.Rotator
 	limiter       *auth.LoginLimiter
 	ruleEngine    *rules.RuleEngine
 	whitelistMgr  *security.WhitelistManager
 	bruteGuard    *security.BruteGuard
-	tracker        *bandwidth.Tracker
-	budgetCtrl     *bandwidth.BudgetController
-	sizeForwarder  *engine.SizeForwarder
-	reportHub      *report.ReportHub
+	tracker       *bandwidth.Tracker
+	budgetCtrl    *bandwidth.BudgetController
+	sizeForwarder *engine.SizeForwarder
+	reportHub     *report.ReportHub
 	groupMgr      *engine.GroupManager
 	healthChecker *health.HealthChecker
 	importer      *importer.URLImporter
@@ -79,6 +86,9 @@ type ServerDeps struct {
 	OnConfigReload func() error
 	OnConfigSave   func()
 	Logger         *slog.Logger
+	// CfgMu is the mutex shared with every other writer of *Cfg (auto-bypass
+	// callback, sync master snapshot). A private one is created if nil.
+	CfgMu *sync.RWMutex
 }
 
 // NewServer constructs a Server and registers its routes.
@@ -94,9 +104,13 @@ func NewServer(cfg *config.AppConfig, cfgPath string, rotator engine.Rotator, li
 
 // NewServerWithDeps is the Phase 6-aware constructor.
 func NewServerWithDeps(d ServerDeps) *Server {
+	if d.CfgMu == nil {
+		d.CfgMu = &sync.RWMutex{}
+	}
 	s := &Server{
 		cfg:           d.Cfg,
 		cfgPath:       d.CfgPath,
+		cfgMu:         d.CfgMu,
 		rotator:       d.Rotator,
 		limiter:       d.Limiter,
 		ruleEngine:    d.RuleEngine,
@@ -193,6 +207,12 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("POST /api/health/check-now", s.handleHealthCheckNow)
 	s.mux.HandleFunc("GET /api/groups", s.handleGetGroups)
 	s.mux.HandleFunc("POST /api/groups", s.handlePostGroup)
+	s.mux.HandleFunc("GET /api/groups/{name}/proxies", s.handleGetGroupProxies)
+	s.mux.HandleFunc("GET /api/groups/{name}/history", s.handleGetGroupHistory)
+	s.mux.HandleFunc("GET /api/groups/{name}/search", s.handleSearchGroupIP)
+	s.mux.HandleFunc("POST /api/groups/{name}/history/restore", s.handleRestoreGroupHistory)
+	s.mux.HandleFunc("POST /api/groups/{name}/attach", s.handleAttachHistoryProxy)
+	s.mux.HandleFunc("POST /api/groups/{name}/check-ip", s.handleCheckGroupIP)
 	s.mux.HandleFunc("PUT /api/groups/{name}", s.handlePutGroup)
 	s.mux.HandleFunc("DELETE /api/groups/{name}", s.handleDeleteGroup)
 	s.mux.HandleFunc("GET /api/port-mappings", s.handleGetPortMappings)
@@ -254,7 +274,55 @@ func (s *Server) persistTokens() {
 	}
 }
 
-// ServeHTTP satisfies http.Handler.
+type cfgLockMode int
+
+const (
+	cfgLockNone cfgLockMode = iota
+	cfgLockRead
+	cfgLockWrite
+)
+
+// cfgLockFor decides how a request locks the shared config.
+//
+// Unlocked routes either never touch s.cfg or do slow work (bcrypt, network
+// calls, long-lived sockets) and lock the few fields they need themselves:
+// holding the write lock across a 30 s HTTP fetch would freeze the panel.
+func cfgLockFor(r *http.Request) cfgLockMode {
+	p := r.URL.Path
+	switch {
+	case strings.HasPrefix(p, "/ws/"),
+		p == "/api/login", p == "/api/login/totp",
+		p == "/api/sync/push",
+		p == "/api/system/dns/test",
+		p == "/api/health/check-now",
+		strings.HasPrefix(p, "/api/import/fetch-now/"),
+		strings.HasPrefix(p, "/api/groups/") && strings.HasSuffix(p, "/check-ip"):
+		return cfgLockNone
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return cfgLockRead
+	}
+	return cfgLockWrite
+}
+
+// ServeHTTP satisfies http.Handler. It serialises access to the shared
+// config: concurrent readers, exclusive writers.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch cfgLockFor(r) {
+	case cfgLockRead:
+		s.cfgMu.RLock()
+		defer s.cfgMu.RUnlock()
+	case cfgLockWrite:
+		s.cfgMu.Lock()
+		defer s.cfgMu.Unlock()
+	}
 	s.mux.ServeHTTP(w, r)
+}
+
+// jwtSecret reads the signing secret under the read lock. Only for the
+// routes that cfgLockFor leaves unlocked.
+func (s *Server) jwtSecret() string {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.JwtSecret
 }

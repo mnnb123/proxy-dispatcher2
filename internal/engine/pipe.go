@@ -39,7 +39,23 @@ func (c *idleConn) Write(p []byte) (int, error) {
 func Pipe(ctx context.Context, client net.Conn, remote net.Conn, idleTimeout time.Duration) PipeResult {
 	start := time.Now()
 	var bytesSent, bytesRecv int64
-	var firstErr atomic.Value
+
+	// firstErr keeps the first non-EOF error from either direction. A plain
+	// mutex is used instead of atomic.Value: the two copy goroutines can fail
+	// with different concrete error types (*net.OpError vs errors.errorString),
+	// and atomic.Value.CompareAndSwap panics on inconsistently typed values.
+	var errMu sync.Mutex
+	var firstErr error
+	setErr := func(err error) {
+		if err == nil || err == io.EOF {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+	}
 
 	ic := &idleConn{Conn: client, idle: idleTimeout}
 	ir := &idleConn{Conn: remote, idle: idleTimeout}
@@ -69,9 +85,7 @@ func Pipe(ctx context.Context, client net.Conn, remote net.Conn, idleTimeout tim
 		buf := make([]byte, 32*1024)
 		n, err := io.CopyBuffer(ir, ic, buf)
 		atomic.AddInt64(&bytesSent, n)
-		if err != nil && err != io.EOF {
-			firstErr.CompareAndSwap(nil, err)
-		}
+		setErr(err)
 		closeBoth()
 	}()
 
@@ -80,19 +94,16 @@ func Pipe(ctx context.Context, client net.Conn, remote net.Conn, idleTimeout tim
 		buf := make([]byte, 32*1024)
 		n, err := io.CopyBuffer(ic, ir, buf)
 		atomic.AddInt64(&bytesRecv, n)
-		if err != nil && err != io.EOF {
-			firstErr.CompareAndSwap(nil, err)
-		}
+		setErr(err)
 		closeBoth()
 	}()
 
 	wg.Wait()
 	close(ctxDone)
 
-	var retErr error
-	if v := firstErr.Load(); v != nil {
-		retErr, _ = v.(error)
-	}
+	errMu.Lock()
+	retErr := firstErr
+	errMu.Unlock()
 	return PipeResult{
 		BytesSent:     atomic.LoadInt64(&bytesSent),
 		BytesReceived: atomic.LoadInt64(&bytesRecv),

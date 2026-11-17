@@ -85,9 +85,9 @@ func (tm *TokenManager) CreateToken(name string, permissions []string, expiresAt
 // ValidateToken looks up a raw token, updating LastUsed on success.
 func (tm *TokenManager) ValidateToken(raw string) (*config.APIToken, error) {
 	th := hashToken(raw)
-	tm.mu.RLock()
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 	t, ok := tm.tokens[th]
-	tm.mu.RUnlock()
 	if !ok {
 		return nil, errors.New("invalid token")
 	}
@@ -98,12 +98,9 @@ func (tm *TokenManager) ValidateToken(raw string) (*config.APIToken, error) {
 	if t.ExpiresAt > 0 && now > t.ExpiresAt {
 		return nil, errors.New("token expired")
 	}
-	go func() {
-		tm.mu.Lock()
-		t.LastUsed = now
-		tm.mu.Unlock()
-	}()
-	return t, nil
+	t.LastUsed = now
+	cp := *t // callers get a snapshot; the stored record stays lock-protected
+	return &cp, nil
 }
 
 // HasPermission checks whether a token grants the given permission.

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -16,9 +15,8 @@ type loginReq struct {
 
 // handleLogin performs stage-1 login: password → full JWT or totp-required token.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req loginReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -43,7 +41,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Legacy fallback.
-		if req.Username != s.cfg.AdminUser || !auth.VerifyPassword(req.Password, s.cfg.AdminPassHash) {
+		s.cfgMu.RLock()
+		adminUser, adminHash := s.cfg.AdminUser, s.cfg.AdminPassHash
+		s.cfgMu.RUnlock()
+		if req.Username != adminUser || !auth.VerifyPassword(req.Password, adminHash) {
 			s.limiter.RecordFail(ip)
 			respondError(w, http.StatusUnauthorized, "invalid credentials")
 			return
@@ -51,10 +52,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		user = &config.UserAccount{Username: req.Username, Role: "admin"}
 	}
 	s.limiter.RecordSuccess(ip)
-	s.persistUsers()
+	// No config write here. A login only changes LastLogin, which lives in
+	// the user manager and is written out with the next real user change.
+	// Persisting on every login rewrote the whole config, created a backup
+	// and pushed to every sync slave each time someone signed in.
+	secret := s.jwtSecret()
 
 	if user.TOTPEnabled {
-		tmp, err := auth.GenerateTokenWithExtras(user.Username, s.cfg.JwtSecret, 5*time.Minute, map[string]interface{}{"stage": "totp"})
+		tmp, err := auth.GenerateTokenWithExtras(user.Username, secret, 5*time.Minute, map[string]interface{}{"stage": "totp"})
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "token error")
 			return
@@ -65,7 +70,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	tok, err := auth.GenerateTokenWithExtras(user.Username, s.cfg.JwtSecret, 24*time.Hour, map[string]interface{}{"stage": "full"})
+	tok, err := auth.GenerateTokenWithExtras(user.Username, secret, 24*time.Hour, map[string]interface{}{"stage": "full"})
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "token error")
 		return
@@ -85,13 +90,25 @@ type loginTOTPReq struct {
 
 // handleLoginTOTP performs stage-2 TOTP or recovery-code login.
 func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req loginTOTPReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
-	claims, err := auth.ValidateTokenClaims(req.SessionToken, s.cfg.JwtSecret)
+	ip := getClientIP(r)
+	if ok, remaining := s.limiter.CheckAllowed(ip); !ok {
+		respondJSON(w, http.StatusTooManyRequests, map[string]interface{}{
+			"error":         "too many failed attempts",
+			"retry_after_s": int(remaining.Seconds()),
+		})
+		return
+	}
+	if s.userMgr == nil {
+		respondError(w, http.StatusServiceUnavailable, "user manager unavailable")
+		return
+	}
+	jwtSecret := s.jwtSecret()
+	claims, err := auth.ValidateTokenClaims(req.SessionToken, jwtSecret)
 	if err != nil {
 		respondError(w, http.StatusUnauthorized, "invalid session token")
 		return
@@ -106,14 +123,16 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "user not found")
 		return
 	}
-	secret := auth.DecryptTOTPSecret(user.TOTPSecret, s.cfg.JwtSecret)
+	secret := auth.DecryptTOTPSecret(user.TOTPSecret, jwtSecret)
 	ok := false
+	recoveryUsed := false
 	if req.Code != "" {
 		ok = auth.ValidateTOTP(secret, req.Code)
 	} else if req.Recovery != "" {
 		var newHashes []string
 		ok, newHashes = auth.ValidateRecoveryCode(req.Recovery, user.RecoveryCodes)
 		if ok {
+			recoveryUsed = true
 			_ = s.userMgr.MutateByID(user.ID, func(u *config.UserAccount) error {
 				u.RecoveryCodes = newHashes
 				return nil
@@ -121,11 +140,21 @@ func (s *Server) handleLoginTOTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !ok {
+		// A 6-digit code is brute-forceable without this; count it like a
+		// failed password attempt.
+		s.limiter.RecordFail(ip)
 		respondError(w, http.StatusUnauthorized, "invalid code")
 		return
 	}
-	s.persistUsers()
-	tok, err := auth.GenerateTokenWithExtras(uname, s.cfg.JwtSecret, 24*time.Hour, map[string]interface{}{"stage": "full"})
+	s.limiter.RecordSuccess(ip)
+	if recoveryUsed {
+		// A consumed recovery code must hit disk, or it would work again
+		// after a restart. This route is not under the ServeHTTP lock.
+		s.cfgMu.Lock()
+		s.persistUsers()
+		s.cfgMu.Unlock()
+	}
+	tok, err := auth.GenerateTokenWithExtras(uname, jwtSecret, 24*time.Hour, map[string]interface{}{"stage": "full"})
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "token error")
 		return
@@ -165,9 +194,8 @@ type changePassReq struct {
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req changePassReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -225,7 +253,7 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	qr := auth.GenerateQRURL(secret, actx.Username, "ProxyDispatcher")
 	session, err := auth.GenerateTokenWithExtras(actx.Username, s.cfg.JwtSecret, 10*time.Minute, map[string]interface{}{
-		"stage":         "totp_setup",
+		"stage":          "totp_setup",
 		"pending_secret": secret,
 	})
 	if err != nil {
@@ -242,7 +270,7 @@ type totpConfirmReq struct {
 
 func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	var req totpConfirmReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -299,7 +327,7 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req totpDisableReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}

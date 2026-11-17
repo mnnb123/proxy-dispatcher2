@@ -117,5 +117,10 @@ func (bc *BudgetController) Reload(cfg config.BudgetConfig) {
 	bc.mu.Unlock()
 	bc.dailyExceeded.Store(false)
 	bc.warningTriggered.Store(false)
-	bc.domainExceeded = sync.Map{}
+	// Clear in place: assigning sync.Map{} copies a live map while
+	// CheckBudget may be calling LoadOrStore on it.
+	bc.domainExceeded.Range(func(k, _ any) bool {
+		bc.domainExceeded.Delete(k)
+		return true
+	})
 }

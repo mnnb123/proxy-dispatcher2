@@ -19,6 +19,10 @@ type AggBucket struct {
 	SumLatencyMs int64  `json:"sum_latency_ms"`
 	MinLatencyMs int64  `json:"min_latency_ms"`
 	MaxLatencyMs int64  `json:"max_latency_ms"`
+
+	// rolled marks a bucket already merged into the coarser level, so a
+	// bucket kept around for charts is never double-counted.
+	rolled bool
 }
 
 // ChartPoint is a single data point for time-series charts.
@@ -96,15 +100,21 @@ func (a *Aggregator) Record(entry *LogEntry) {
 	a.minuteMu.Unlock()
 }
 
-// RollupMinuteToHour merges minute buckets into hour buckets.
+// RollupMinuteToHour merges completed, not-yet-rolled minute buckets into
+// hour buckets. Minute buckets are left in place (CleanupOld prunes them by
+// age) so the minute chart keeps a sliding window instead of being wiped
+// every hour. Safe to call as often as desired.
 func (a *Aggregator) RollupMinuteToHour() {
+	currentMinute := time.Now().Format("2006-01-02T15:04")
 	a.minuteMu.Lock()
-	old := a.minuteStats
-	a.minuteStats = make(map[string]*AggBucket)
+	pending := snapshotPending(a.minuteStats, currentMinute)
 	a.minuteMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
 
 	a.hourMu.Lock()
-	for _, b := range old {
+	for _, b := range pending {
 		hourKey := b.TimeKey[:13] // "2006-01-02T15"
 		key := fmt.Sprintf("%s|%s|%s", b.Domain, b.RouteType, hourKey)
 		h, ok := a.hourStats[key]
@@ -112,20 +122,25 @@ func (a *Aggregator) RollupMinuteToHour() {
 			h = &AggBucket{Domain: b.Domain, RouteType: b.RouteType, TimeKey: hourKey, MinLatencyMs: b.MinLatencyMs}
 			a.hourStats[key] = h
 		}
-		mergeBucket(h, b)
+		mergeBucket(h, &b)
 	}
 	a.hourMu.Unlock()
 }
 
-// RollupHourToDay merges hour buckets into day buckets.
+// RollupHourToDay merges completed, not-yet-rolled hour buckets into day
+// buckets. Run it at least hourly: hour buckets expire after keepHours and
+// a once-a-day rollup would miss whatever CleanupOld already pruned.
 func (a *Aggregator) RollupHourToDay() {
+	currentHour := time.Now().Format("2006-01-02T15")
 	a.hourMu.Lock()
-	old := a.hourStats
-	a.hourStats = make(map[string]*AggBucket)
+	pending := snapshotPending(a.hourStats, currentHour)
 	a.hourMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
 
 	a.dayMu.Lock()
-	for _, b := range old {
+	for _, b := range pending {
 		dayKey := b.TimeKey[:10] // "2006-01-02"
 		key := fmt.Sprintf("%s|%s|%s", b.Domain, b.RouteType, dayKey)
 		d, ok := a.dayStats[key]
@@ -133,9 +148,24 @@ func (a *Aggregator) RollupHourToDay() {
 			d = &AggBucket{Domain: b.Domain, RouteType: b.RouteType, TimeKey: dayKey, MinLatencyMs: b.MinLatencyMs}
 			a.dayStats[key] = d
 		}
-		mergeBucket(d, b)
+		mergeBucket(d, &b)
 	}
 	a.dayMu.Unlock()
+}
+
+// snapshotPending copies every bucket whose TimeKey is strictly before
+// currentKey and that has not been rolled up yet, marking it rolled. Caller
+// must hold the map's mutex.
+func snapshotPending(stats map[string]*AggBucket, currentKey string) []AggBucket {
+	var out []AggBucket
+	for _, b := range stats {
+		if b.rolled || b.TimeKey >= currentKey {
+			continue
+		}
+		b.rolled = true
+		out = append(out, *b)
+	}
+	return out
 }
 
 func mergeBucket(dst, src *AggBucket) {

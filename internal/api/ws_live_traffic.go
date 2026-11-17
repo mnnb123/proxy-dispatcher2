@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -47,26 +48,42 @@ func (s *Server) handleWSLiveTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &report.WSClient{
-		Send:   make(chan []byte, 256),
-		Filter: "",
-		Paused: false,
-	}
+	client := report.NewWSClient(256)
 	s.reportHub.RegisterClient(client)
 
 	go s.wsWritePump(conn, client)
 	go s.wsReadPump(conn, client)
 }
 
+// validateWSToken accepts only a fully authenticated session: a stage-1
+// "totp" token (password only) or a TOTP-setup token must not be able to
+// stream the access log.
 func (s *Server) validateWSToken(token string) (string, error) {
-	return auth.ValidateToken(token, s.cfg.JwtSecret)
+	claims, err := auth.ValidateTokenClaims(token, s.jwtSecret())
+	if err != nil {
+		return "", err
+	}
+	if stage, _ := claims["stage"].(string); stage != "" && stage != "full" {
+		return "", errors.New("incomplete login")
+	}
+	uname, _ := claims["username"].(string)
+	if uname == "" {
+		return "", errors.New("missing username")
+	}
+	if s.userMgr != nil {
+		u := s.userMgr.GetUser(uname)
+		if u == nil || u.Disabled {
+			return "", errors.New("user unavailable")
+		}
+	}
+	return uname, nil
 }
 
 func (s *Server) wsWritePump(conn *websocket.Conn, client *report.WSClient) {
 	defer conn.Close()
 	for msg := range client.Send {
-		if client.Filter != "" {
-			if !strings.Contains(string(msg), client.Filter) {
+		if f := client.GetFilter(); f != "" {
+			if !strings.Contains(string(msg), f) {
 				continue
 			}
 		}
@@ -95,11 +112,11 @@ func (s *Server) wsReadPump(conn *websocket.Conn, client *report.WSClient) {
 		}
 		switch cmd.Action {
 		case "pause":
-			client.Paused = true
+			client.SetPaused(true)
 		case "resume":
-			client.Paused = false
+			client.SetPaused(false)
 		case "filter":
-			client.Filter = cmd.Filter
+			client.SetFilter(cmd.Filter)
 		}
 	}
 }

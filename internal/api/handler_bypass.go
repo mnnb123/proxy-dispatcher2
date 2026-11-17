@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"strings"
@@ -31,9 +30,8 @@ type postBypassDomainsReq struct {
 }
 
 func (s *Server) handlePostBypassDomains(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req postBypassDomainsReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -82,14 +80,13 @@ func (s *Server) handleGetBypassExtensions(w http.ResponseWriter, r *http.Reques
 }
 
 type postBypassExtReq struct {
-	DefaultAction string                `json:"default_action"`
+	DefaultAction string                 `json:"default_action"`
 	Extensions    []config.ExtensionRule `json:"extensions"`
 }
 
 func (s *Server) handlePostBypassExtensions(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req postBypassExtReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -132,9 +129,8 @@ type postResourceProxyReq struct {
 }
 
 func (s *Server) handlePostResourceProxy(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req postResourceProxyReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -153,6 +149,13 @@ func (s *Server) handlePostResourceProxy(w http.ResponseWriter, r *http.Request)
 	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
 		respondError(w, http.StatusInternalServerError, "save failed")
 		return
+	}
+	// The connection path reads the resource proxy from a snapshot that the
+	// reloader refreshes; without this the change needed a restart.
+	if s.onConfigReload != nil {
+		if err := s.onConfigReload(); err != nil {
+			s.logger.Warn("config reload after resource-proxy save", "error", err)
+		}
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

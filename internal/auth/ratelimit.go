@@ -9,6 +9,7 @@ import (
 type AttemptInfo struct {
 	FailCount int
 	BannedAt  time.Time
+	LastFail  time.Time
 }
 
 // LoginLimiter enforces a max-fail/ban-duration rate limit per IP.
@@ -57,8 +58,9 @@ func (l *LoginLimiter) RecordFail(ip string) {
 		l.attempts[ip] = info
 	}
 	info.FailCount++
+	info.LastFail = time.Now()
 	if info.FailCount >= l.maxFails {
-		info.BannedAt = time.Now()
+		info.BannedAt = info.LastFail
 	}
 }
 
@@ -74,7 +76,15 @@ func (l *LoginLimiter) Cleanup() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for ip, info := range l.attempts {
-		if info.FailCount >= l.maxFails && time.Since(info.BannedAt) >= l.banDuration {
+		if info.FailCount >= l.maxFails {
+			if time.Since(info.BannedAt) >= l.banDuration {
+				delete(l.attempts, ip)
+			}
+			continue
+		}
+		// Sub-threshold entries used to live forever: one probe per spoofed
+		// IP grew the map without bound.
+		if time.Since(info.LastFail) >= l.banDuration {
 			delete(l.attempts, ip)
 		}
 	}

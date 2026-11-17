@@ -16,12 +16,12 @@ import (
 
 // Socks5Result holds destination info and byte counts from a SOCKS5 session.
 type Socks5Result struct {
-	DestHost     string
-	DestPort     string
-	BytesRecv    int64  // bytes received from upstream (download)
-	BytesSent    int64  // bytes sent to upstream (upload)
-	ProxyUsed    string // set if a retry switched to a different proxy
-	RouteType    string // "proxy", "direct", or "blocked"
+	DestHost  string
+	DestPort  string
+	BytesRecv int64  // bytes received from upstream (download)
+	BytesSent int64  // bytes sent to upstream (upload)
+	ProxyUsed string // set if a retry switched to a different proxy
+	RouteType string // "proxy", "direct", or "blocked"
 }
 
 // countingConn wraps a net.Conn to track bytes read and written.
@@ -65,13 +65,21 @@ func (d *domainResolver) Resolve(ctx context.Context, name string) (context.Cont
 // Socks5Handler handles incoming SOCKS5 client connections by tunneling
 // them through an upstream proxy.
 type Socks5Handler struct {
-	logger     *slog.Logger
-	ruleEngine *rules.RuleEngine
+	logger        *slog.Logger
+	ruleEngine    *rules.RuleEngine
+	resourceProxy func() *config.ProxyEntry
 }
 
 // NewSocks5Handler creates a new SOCKS5 handler.
 func NewSocks5Handler(logger *slog.Logger, ruleEngine *rules.RuleEngine) *Socks5Handler {
 	return &Socks5Handler{logger: logger, ruleEngine: ruleEngine}
+}
+
+// SetResourceProxyProvider installs a callback returning the configured
+// resource proxy (or nil). Without it, "resource" rules on the SOCKS5 path
+// fall back to a direct connection, unlike the HTTP path.
+func (h *Socks5Handler) SetResourceProxyProvider(fn func() *config.ProxyEntry) {
+	h.resourceProxy = fn
 }
 
 // HandleConnection serves a SOCKS5 session on clientConn, tunneling all
@@ -114,7 +122,28 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 			action := h.ruleEngine.Evaluate(result.DestHost, "")
 			h.logger.Debug("socks5 rule eval", "domain", result.DestHost, "action", action.Type, "target", targetAddr)
 			switch action.Type {
-			case "direct", "resource":
+			case "resource":
+				if h.resourceProxy != nil {
+					if rp := h.resourceProxy(); rp != nil {
+						result.RouteType = "resource"
+						result.ProxyUsed = fmt.Sprintf("%s:%d", rp.Host, rp.Port)
+						var conn net.Conn
+						var err error
+						switch rp.Type {
+						case "socks5":
+							conn, err = dialThroughSOCKS5Proxy(dialCtx, *rp, targetAddr)
+						default:
+							conn, err = dialThroughHTTPProxy(dialCtx, *rp, targetAddr)
+						}
+						if err != nil {
+							return nil, err
+						}
+						counter = &countingConn{Conn: conn}
+						return counter, nil
+					}
+				}
+				fallthrough
+			case "direct":
 				// Bypass: connect directly to target, skip upstream proxy.
 				result.RouteType = "direct"
 				d := net.Dialer{Timeout: proxyDialTimeout}
@@ -192,4 +221,3 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 	}
 	return &result, nil
 }
-

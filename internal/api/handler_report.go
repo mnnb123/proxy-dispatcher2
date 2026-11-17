@@ -1,8 +1,8 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
 
 	"proxy-dispatcher/internal/config"
@@ -108,6 +108,9 @@ func (s *Server) handleDiskUsage(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, info)
 }
 
+// csvDateRe restricts the export date to YYYY-MM-DD (it is used in a filename).
+var csvDateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
 // GET /api/report/export-csv?date=2024-01-15
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	if s.reportHub == nil {
@@ -117,6 +120,12 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	date := r.URL.Query().Get("date")
 	if date == "" {
 		respondError(w, http.StatusBadRequest, "date parameter required")
+		return
+	}
+	if !csvDateRe.MatchString(date) {
+		// date is interpolated into a filename; anything but YYYY-MM-DD
+		// would allow reading arbitrary *.log files via "../".
+		respondError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv")
@@ -163,7 +172,7 @@ func (s *Server) handlePostReportConfig(w http.ResponseWriter, r *http.Request) 
 		AutoClearSeconds  int  `json:"auto_clear_seconds"`
 		AutoClearEnabled  bool `json:"auto_clear_enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

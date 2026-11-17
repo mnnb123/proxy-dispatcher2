@@ -1,10 +1,8 @@
 package engine
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -39,7 +37,9 @@ var hopByHopHeaders = map[string]bool{
 // either a CONNECT tunnel or plain HTTP forward through the upstream proxy.
 // It returns the byte counts from the pipe session.
 func (h *HttpHandler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry) (PipeResult, error) {
-	reader := bufio.NewReader(clientConn)
+	// Use clientConn's own buffered reader: wrapping it in another bufio
+	// layer would read ahead and strand bytes in a reader that is discarded.
+	reader := clientConn.reader
 	requestLine, err := reader.ReadString('\n')
 	if err != nil {
 		return PipeResult{}, fmt.Errorf("read request line: %w", err)
@@ -61,12 +61,12 @@ func (h *HttpHandler) HandleConnection(ctx context.Context, clientConn *Buffered
 	}
 
 	if method == "CONNECT" {
-		return h.handleConnect(ctx, clientConn, reader, target, proxy)
+		return h.handleConnect(ctx, clientConn, target, proxy)
 	}
-	return h.handlePlainHTTP(ctx, clientConn, reader, requestLine, mimeHeader, proxy)
+	return h.handlePlainHTTP(ctx, clientConn, requestLine, mimeHeader, proxy)
 }
 
-func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedConn, clientReader *bufio.Reader, targetHost string, proxy config.ProxyEntry) (PipeResult, error) {
+func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedConn, targetHost string, proxy config.ProxyEntry) (PipeResult, error) {
 	var proxyConn net.Conn
 	var err error
 
@@ -105,24 +105,17 @@ func (h *HttpHandler) handleConnect(ctx context.Context, clientConn *BufferedCon
 	}
 	defer proxyConn.Close()
 
-	if _, err := clientConn.Conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		return PipeResult{}, fmt.Errorf("write 200: %w", err)
 	}
 
-	// Flush any bytes the client sent after the CONNECT headers that were
-	// buffered in clientReader but not yet forwarded.
-	if buffered := clientReader.Buffered(); buffered > 0 {
-		peek, _ := clientReader.Peek(buffered)
-		if _, err := proxyConn.Write(peek); err != nil {
-			return PipeResult{}, fmt.Errorf("flush buffered: %w", err)
-		}
-	}
-
+	// Pipe reads through clientConn's buffered reader, so any bytes the
+	// client sent after the CONNECT headers are forwarded naturally.
 	pr := Pipe(ctx, clientConn, proxyConn, 60*time.Second)
 	return pr, nil
 }
 
-func (h *HttpHandler) handlePlainHTTP(ctx context.Context, clientConn *BufferedConn, reader *bufio.Reader, requestLine string, headers textproto.MIMEHeader, proxy config.ProxyEntry) (PipeResult, error) {
+func (h *HttpHandler) handlePlainHTTP(ctx context.Context, clientConn *BufferedConn, requestLine string, headers textproto.MIMEHeader, proxy config.ProxyEntry) (PipeResult, error) {
 	d := net.Dialer{Timeout: 15 * time.Second}
 	proxyConn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(proxy.Host, strconv.Itoa(proxy.Port)))
 	if err != nil {
@@ -158,25 +151,10 @@ func (h *HttpHandler) handlePlainHTTP(ctx context.Context, clientConn *BufferedC
 		return PipeResult{}, fmt.Errorf("write request: %w", err)
 	}
 
-	// If there's a body, stream it based on Content-Length or
-	// Transfer-Encoding: chunked.
-	if cl := headers.Get("Content-Length"); cl != "" {
-		if n, err := strconv.ParseInt(cl, 10, 64); err == nil && n > 0 {
-			written, copyErr := io.CopyN(proxyConn, reader, n)
-			reqBytes += written
-			if copyErr != nil {
-				return PipeResult{}, fmt.Errorf("forward body: %w", copyErr)
-			}
-		}
-	} else if te := headers.Get("Transfer-Encoding"); strings.EqualFold(te, "chunked") {
-		written, copyErr := io.Copy(proxyConn, reader)
-		reqBytes += written
-		if copyErr != nil {
-			return PipeResult{}, fmt.Errorf("forward chunked body: %w", copyErr)
-		}
-	}
-
-	// Forward response as raw bytes.
-	respBytes, _ := io.Copy(clientConn.Conn, proxyConn)
-	return PipeResult{BytesSent: reqBytes, BytesReceived: respBytes}, nil
+	// Pipe the remainder bidirectionally. The previous sequential approach
+	// (copy the body, then copy the response) deadlocked on chunked uploads:
+	// io.Copy waited for client EOF while the client waited for a response.
+	pr := Pipe(ctx, clientConn, proxyConn, 60*time.Second)
+	pr.BytesSent += reqBytes
+	return pr, nil
 }

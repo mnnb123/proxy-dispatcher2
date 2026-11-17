@@ -34,7 +34,7 @@ type AlertManager struct {
 	alertMu   sync.RWMutex
 	idCounter uint64
 
-	cooldowns map[string]time.Time
+	cooldowns  map[string]time.Time
 	cooldownMu sync.Mutex
 
 	logger *slog.Logger
@@ -81,7 +81,8 @@ func (am *AlertManager) fire(level, message, domain string, value int64) {
 	am.cooldowns[cooldownKey] = time.Now()
 	am.cooldownMu.Unlock()
 
-	am.idCounter++
+	am.alertMu.Lock()
+	am.idCounter++ // guarded by alertMu: fire() runs from every connection goroutine
 	alert := &AlertEntry{
 		ID:        am.idCounter,
 		Timestamp: time.Now().UnixMilli(),
@@ -90,8 +91,6 @@ func (am *AlertManager) fire(level, message, domain string, value int64) {
 		Domain:    domain,
 		Value:     value,
 	}
-
-	am.alertMu.Lock()
 	am.alerts = append(am.alerts, alert)
 	if len(am.alerts) > am.maxAlerts {
 		am.alerts = am.alerts[len(am.alerts)-am.maxAlerts:]
@@ -122,6 +121,10 @@ func (am *AlertManager) ClearAlerts() {
 	am.alertMu.Unlock()
 }
 
+// alertHTTPClient bounds outbound notifications; http.Post has no timeout
+// and a hung webhook would leak one goroutine per alert forever.
+var alertHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 func (am *AlertManager) notify(alert *AlertEntry) {
 	if am.webhookURL != "" {
 		am.sendWebhook(alert)
@@ -133,7 +136,7 @@ func (am *AlertManager) notify(alert *AlertEntry) {
 
 func (am *AlertManager) sendWebhook(alert *AlertEntry) {
 	data, _ := json.Marshal(alert)
-	resp, err := http.Post(am.webhookURL, "application/json", bytes.NewReader(data))
+	resp, err := alertHTTPClient.Post(am.webhookURL, "application/json", bytes.NewReader(data))
 	if err != nil {
 		am.logger.Error("webhook send failed", "error", err)
 		return
@@ -149,7 +152,7 @@ func (am *AlertManager) sendTelegram(alert *AlertEntry) {
 		"text":    text,
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(data))
+	resp, err := alertHTTPClient.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		am.logger.Error("telegram send failed", "error", err)
 		return

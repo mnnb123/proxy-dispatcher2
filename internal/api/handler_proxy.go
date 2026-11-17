@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -55,9 +54,8 @@ type postInputReq struct {
 }
 
 func (s *Server) handlePostInput(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req postInputReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
@@ -71,13 +69,24 @@ func (s *Server) handlePostInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The Proxy tab manages only the "default" group. Its port range must
+	// not collide with the other (per-country) groups.
+	startPort := s.cfg.OutputStartPort
+	if req.StartPort >= 1024 && req.StartPort <= 65535 {
+		startPort = req.StartPort
+	}
+	if len(entries) > 0 {
+		if err := s.checkPortRange("default", startPort, startPort+len(entries)-1); err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	// Update VPS IP if provided.
 	if req.VpsIp != "" {
 		s.cfg.VpsIp = req.VpsIp
 	}
-	if req.StartPort >= 1024 && req.StartPort <= 65535 {
-		s.cfg.OutputStartPort = req.StartPort
-	}
+	s.cfg.OutputStartPort = startPort
 
 	// 1:1 mapping: output count = input proxy count.
 	s.cfg.InputProxies = entries
@@ -89,27 +98,30 @@ func (s *Server) handlePostInput(w http.ResponseWriter, r *http.Request) {
 		s.cfg.RotationMode = req.RotationMode
 	}
 
-	// Auto-create default group + port mapping.
+	// Replace the "default" group + its port mapping, leaving every other
+	// group untouched. (This used to overwrite ALL groups and mappings, so
+	// saving the Proxy tab wiped any per-country groups.)
+	others := make([]config.ProxyGroup, 0, len(s.cfg.ProxyGroups)+1)
+	for _, g := range s.cfg.ProxyGroups {
+		if g.Name != "default" {
+			others = append(others, g)
+		}
+	}
+	s.removeGroupMappings("default")
 	if len(entries) > 0 {
 		mode := s.cfg.RotationMode
 		if mode == "" {
 			mode = "roundrobin"
 		}
-		s.cfg.ProxyGroups = []config.ProxyGroup{{
+		others = append([]config.ProxyGroup{{
 			Name:         "default",
 			Proxies:      entries,
 			RotationMode: mode,
 			StickyTTLSec: 300,
-		}}
-		s.cfg.PortMappings = []config.PortMapping{{
-			PortStart: s.cfg.OutputStartPort,
-			PortEnd:   s.cfg.OutputStartPort + len(entries) - 1,
-			GroupName: "default",
-		}}
-	} else {
-		s.cfg.ProxyGroups = []config.ProxyGroup{}
-		s.cfg.PortMappings = []config.PortMapping{}
+		}}, others...)
+		s.setGroupMapping("default", s.cfg.OutputStartPort, s.cfg.OutputStartPort+len(entries)-1)
 	}
+	s.cfg.ProxyGroups = others
 
 	// Update rotator if available (legacy).
 	if s.rotator != nil {
@@ -166,9 +178,8 @@ type postOutputReq struct {
 }
 
 func (s *Server) handlePostOutput(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req postOutputReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}

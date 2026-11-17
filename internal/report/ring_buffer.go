@@ -51,11 +51,12 @@ func NewRingBuffer(maxRows int, autoClearSec int, logger *slog.Logger) *RingBuff
 
 func (rb *RingBuffer) autoClear() {
 	rb.Clear()
-	rb.mu.RLock()
+	rb.mu.Lock()
 	sec := rb.autoClearSec
-	rb.mu.RUnlock()
-	if sec > 0 {
-		rb.clearTimer.Reset(time.Duration(sec) * time.Second)
+	t := rb.clearTimer
+	rb.mu.Unlock()
+	if sec > 0 && t != nil {
+		t.Reset(time.Duration(sec) * time.Second)
 	}
 }
 
@@ -187,12 +188,12 @@ func (rb *RingBuffer) UpdateConfig(maxRows int, autoClearSec int) {
 		rb.count = copyCount
 	}
 	rb.autoClearSec = autoClearSec
-	rb.mu.Unlock()
-
 	if rb.clearTimer != nil {
 		rb.clearTimer.Stop()
+		rb.clearTimer = nil
 	}
 	if autoClearSec > 0 {
 		rb.clearTimer = time.AfterFunc(time.Duration(autoClearSec)*time.Second, rb.autoClear)
 	}
+	rb.mu.Unlock()
 }

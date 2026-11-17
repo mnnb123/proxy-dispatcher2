@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -77,6 +79,27 @@ func main() {
 	exitOnErr(err, "rule engine", logger)
 	directDialer := engine.NewDirectDialer(time.Duration(cfg.ConnTimeout)*time.Second, logger)
 	socks5H := engine.NewSocks5Handler(logger, ruleEngine)
+
+	// cfgMu guards *cfg for everything outside the connection hot path: the
+	// API server takes it per request, the callbacks below take it directly.
+	cfgMu := &sync.RWMutex{}
+
+	// The hot path must not contend on cfgMu, so the one config value it
+	// needs per connection is published as an immutable snapshot.
+	var liveResProxy atomic.Pointer[config.ProxyEntry]
+	publishRuntime := func() {
+		if cfg.ResourceProxy == nil {
+			liveResProxy.Store(nil)
+			return
+		}
+		cp := *cfg.ResourceProxy
+		liveResProxy.Store(&cp)
+	}
+	publishRuntime()
+	resourceProxy := func() *config.ProxyEntry {
+		return rules.ResolveBypassTarget("resource", liveResProxy.Load())
+	}
+	socks5H.SetResourceProxyProvider(resourceProxy)
 	idleTimeout := time.Duration(cfg.IdleTimeout) * time.Second
 
 	whitelistMgr, err := security.NewWhitelistManager(cfg.Whitelist, logger)
@@ -99,8 +122,8 @@ func main() {
 		Logger:        logger,
 	})
 
-	var cfgMu sync.Mutex
 	sizeForwarder.SetOnAutoBypass(func(domain string) {
+		// Runs on a connection goroutine, never under an API handler's lock.
 		cfgMu.Lock()
 		defer cfgMu.Unlock()
 		cfg.BypassDomains = append(cfg.BypassDomains, config.DomainRule{
@@ -111,7 +134,7 @@ func main() {
 		logger.Info("auto-bypass: added domain to bypass rules", "domain", domain)
 	})
 
-	healthChecker := health.NewHealthChecker(cfg.HealthCheck, groupMgr.AllGroupProxies(), logger)
+	healthChecker := health.NewHealthChecker(cfg.HealthCheck, healthGroupsProvider(groupMgr), logger)
 	healthChecker.OnStatusChange = func(p *config.ProxyEntry, oldS, newS string) {
 		logger.Info("proxy status change", "proxy", fmt.Sprintf("%s:%d", p.Host, p.Port), "from", oldS, "to", newS)
 		for _, g := range groupMgr.AllGroups() {
@@ -130,7 +153,8 @@ func main() {
 
 	// --- Connection handler ---
 	connHandler := &ConnHandler{
-		cfg: cfg, socks5H: socks5H, httpH: httpH, groupMgr: groupMgr,
+		resourceProxy: resourceProxy, connTimeout: time.Duration(cfg.ConnTimeout) * time.Second,
+		socks5H: socks5H, httpH: httpH, groupMgr: groupMgr,
 		ruleEngine: ruleEngine, directDialer: directDialer,
 		whitelistMgr: whitelistMgr, bruteGuard: bruteGuard,
 		tracker: tracker, sizeForwarder: sizeForwarder,
@@ -148,9 +172,9 @@ func main() {
 	dnsMgr := system.NewDNSManager(cfg.SystemConfig, logger)
 	directDialer.SetResolver(dnsMgr.GetResolver())
 
-	reloadAllModules := buildReloader(cfg, ruleEngine, groupMgr, whitelistMgr, healthChecker, budgetCtrl, dnsMgr, directDialer, lm, logger)
+	reloadAllModules := buildReloader(cfg, ruleEngine, groupMgr, whitelistMgr, bruteGuard, budgetCtrl, dnsMgr, directDialer, lm, publishRuntime, logger)
 
-	syncMaster, syncSlave := setupSync(cfg, configPath, reloadAllModules, logger)
+	syncMaster, syncSlave := setupSync(cfg, cfgMu, configPath, reloadAllModules, logger)
 
 	onConfigSave := func() {
 		backupMgr.AutoBackup()
@@ -169,7 +193,7 @@ func main() {
 		SyncMaster: syncMaster, SyncSlave: syncSlave,
 		BackupMgr: backupMgr, DNSMgr: dnsMgr, Version: Version,
 		OnConfigReload: reloadAllModules, OnConfigSave: onConfigSave,
-		Logger: logger,
+		Logger: logger, CfgMu: cfgMu,
 	})
 
 	httpSrv := startWebPanel(cfg, apiServer, userMgr, tokenMgr, logger)
@@ -246,6 +270,20 @@ func handleResetAdmin(path string, logger *slog.Logger) {
 
 // --- Setup helpers ---
 
+// healthGroupsProvider adapts the GroupManager's live proxy pointers to the
+// health checker. Results written through these pointers are visible to the
+// rotators (getAlive / weights) and to /api/health/status.
+func healthGroupsProvider(gm *engine.GroupManager) health.GroupProvider {
+	return func() []health.Group {
+		m := gm.GroupProxies()
+		out := make([]health.Group, 0, len(m))
+		for name, ptrs := range m {
+			out = append(out, health.Group{Name: name, Proxies: ptrs})
+		}
+		return out
+	}
+}
+
 func exitOnErr(err error, name string, logger *slog.Logger) {
 	if err != nil {
 		logger.Error(name+" init failed", "error", err)
@@ -253,30 +291,46 @@ func exitOnErr(err error, name string, logger *slog.Logger) {
 	}
 }
 
-func startListeners(cfg *config.AppConfig, lm *engine.ListenerManager, logger *slog.Logger) {
+// desiredPorts lists every port the config wants a listener on: the union
+// of all port mappings, or the legacy output range when there are none.
+func desiredPorts(cfg *config.AppConfig) []int {
+	var ports []int
 	if len(cfg.PortMappings) > 0 {
 		for _, m := range cfg.PortMappings {
-			count := m.PortEnd - m.PortStart + 1
-			if count <= 0 {
-				continue
-			}
-			if err := lm.Start(m.PortStart, count); err != nil {
-				logger.Warn("listener start for mapping failed", "group", m.GroupName, "error", err)
+			for p := m.PortStart; p <= m.PortEnd; p++ {
+				ports = append(ports, p)
 			}
 		}
-		if len(lm.ActivePorts()) == 0 {
-			logger.Error("no listeners could be opened from port mappings")
-			os.Exit(1)
-		}
-	} else {
-		if err := lm.Start(cfg.OutputStartPort, cfg.OutputCount); err != nil {
-			logger.Error("listener start", "error", err)
-			os.Exit(1)
-		}
+		return ports
+	}
+	for i := 0; i < cfg.OutputCount; i++ {
+		ports = append(ports, cfg.OutputStartPort+i)
+	}
+	return ports
+}
+
+func startListeners(cfg *config.AppConfig, lm *engine.ListenerManager, logger *slog.Logger) {
+	want := desiredPorts(cfg)
+	failed := lm.Reconcile(want)
+	if len(failed) > 0 {
+		logger.Warn("some ports could not be opened", "count", len(failed), "first", failed[0])
+	}
+	if len(want) > 0 && len(lm.ActivePorts()) == 0 {
+		logger.Error("no listeners could be opened", "wanted", len(want))
+		os.Exit(1)
+	}
+	if len(want) == 0 {
+		// Keep running so groups/ports can be configured from the panel.
+		logger.Warn("no proxy ports configured yet; only the web panel is up")
 	}
 }
 
-func buildReloader(cfg *config.AppConfig, ruleEngine *rules.RuleEngine, groupMgr *engine.GroupManager, whitelistMgr *security.WhitelistManager, healthChecker *health.HealthChecker, budgetCtrl *bandwidth.BudgetController, dnsMgr *system.DNSManager, directDialer *engine.DirectDialer, lm *engine.ListenerManager, logger *slog.Logger) func() error {
+// buildReloader returns the "apply in-memory cfg to every module" function.
+// The health checker needs no step here: it pulls live group pointers
+// through its GroupProvider on every round.
+//
+// Callers must hold the config write lock (API handlers do, via ServeHTTP).
+func buildReloader(cfg *config.AppConfig, ruleEngine *rules.RuleEngine, groupMgr *engine.GroupManager, whitelistMgr *security.WhitelistManager, bruteGuard *security.BruteGuard, budgetCtrl *bandwidth.BudgetController, dnsMgr *system.DNSManager, directDialer *engine.DirectDialer, lm *engine.ListenerManager, publishRuntime func(), logger *slog.Logger) func() error {
 	return func() error {
 		if err := ruleEngine.Reload(cfg); err != nil {
 			return err
@@ -287,38 +341,47 @@ func buildReloader(cfg *config.AppConfig, ruleEngine *rules.RuleEngine, groupMgr
 		if err := whitelistMgr.Reload(cfg.Whitelist); err != nil {
 			return err
 		}
-		healthChecker.UpdateGroups(groupMgr.AllGroupProxies())
+		bruteGuard.Reload(cfg.Whitelist.AutoBan)
 		budgetCtrl.Reload(cfg.BandwidthBudget)
 		dnsMgr.Reload(cfg.SystemConfig)
 		directDialer.SetResolver(dnsMgr.GetResolver())
 
-		if len(cfg.PortMappings) > 0 {
-			for _, m := range cfg.PortMappings {
-				count := m.PortEnd - m.PortStart + 1
-				if count > 0 {
-					if err := lm.Restart(m.PortStart, count); err != nil {
-						logger.Warn("listener restart failed", "error", err)
-					}
-				}
-			}
-		} else if cfg.OutputCount > 0 {
-			if err := lm.Restart(cfg.OutputStartPort, cfg.OutputCount); err != nil {
-				logger.Warn("listener restart failed", "error", err)
-			}
+		publishRuntime()
+
+		// Open/close only the ports that changed. The previous code called
+		// Restart once per mapping, and each Restart closed every listener
+		// first, so with several mappings only the last range kept listening.
+		if failed := lm.Reconcile(desiredPorts(cfg)); len(failed) > 0 {
+			logger.Warn("some ports could not be opened", "count", len(failed), "first", failed[0])
 		}
 		return nil
 	}
 }
 
-func setupSync(cfg *config.AppConfig, configPath *string, reloadAll func() error, logger *slog.Logger) (*syncmgr.SyncMaster, *syncmgr.SyncSlave) {
+// snapshotConfig returns a deep copy of cfg taken under the read lock, so
+// the sync master can marshal and send it without racing API writers.
+func snapshotConfig(cfg *config.AppConfig, cfgMu *sync.RWMutex) *config.AppConfig {
+	cfgMu.RLock()
+	raw, err := json.Marshal(cfg)
+	cfgMu.RUnlock()
+	out := &config.AppConfig{}
+	if err != nil || json.Unmarshal(raw, out) != nil {
+		return &config.AppConfig{}
+	}
+	return out
+}
+
+func setupSync(cfg *config.AppConfig, cfgMu *sync.RWMutex, configPath *string, reloadAll func() error, logger *slog.Logger) (*syncmgr.SyncMaster, *syncmgr.SyncSlave) {
 	switch cfg.SyncConfig.Role {
 	case "master":
-		sm := syncmgr.NewSyncMaster(cfg.SyncConfig, func() *config.AppConfig { return cfg }, logger)
+		sm := syncmgr.NewSyncMaster(cfg.SyncConfig, func() *config.AppConfig { return snapshotConfig(cfg, cfgMu) }, logger)
 		if cfg.SyncConfig.AutoSync {
 			sm.StartAutoSync()
 		}
 		return sm, nil
 	case "slave":
+		// onReceive runs inside POST /api/sync/receive, i.e. already under
+		// the API server's config write lock. It must not lock cfgMu again.
 		onReceive := func(incoming *config.AppConfig) error {
 			cfg.ProxyGroups = incoming.ProxyGroups
 			cfg.PortMappings = incoming.PortMappings

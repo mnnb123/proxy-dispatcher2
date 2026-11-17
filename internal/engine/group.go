@@ -22,6 +22,7 @@ type GroupManager struct {
 	groups       map[string]*ManagedGroup
 	portMap      map[int]string
 	portProxyMap map[int]*config.ProxyEntry // direct port→proxy 1:1 lookup
+	mappings     []config.PortMapping
 	logger       *slog.Logger
 	mu           sync.RWMutex
 }
@@ -32,6 +33,7 @@ func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, 
 		groups:       make(map[string]*ManagedGroup),
 		portMap:      make(map[int]string),
 		portProxyMap: make(map[int]*config.ProxyEntry),
+		mappings:     append([]config.PortMapping(nil), mappings...),
 		logger:       logger,
 	}
 	for i := range groups {
@@ -64,7 +66,9 @@ func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, 
 			idx := p - m.PortStart
 			if idx >= 0 && idx < len(g.Proxies) {
 				gm.portProxyMap[p] = g.Proxies[idx]
-				logger.Info("port→proxy mapped", "port", p, "proxy", fmt.Sprintf("%s:%d", g.Proxies[idx].Host, g.Proxies[idx].Port), "idx", idx)
+				// Debug, not Info: with thousands of ports this line flooded
+				// the log on every reload.
+				logger.Debug("port→proxy mapped", "port", p, "proxy", fmt.Sprintf("%s:%d", g.Proxies[idx].Host, g.Proxies[idx].Port), "idx", idx)
 			}
 		}
 	}
@@ -133,19 +137,18 @@ func (gm *GroupManager) AllGroups() []*ManagedGroup {
 	return out
 }
 
-// AllGroupProxies returns ProxyGroup snapshots suitable for passing to the
-// HealthChecker.
-func (gm *GroupManager) AllGroupProxies() []*config.ProxyGroup {
+// GroupProxies returns a snapshot of the live proxy pointers for every
+// group, keyed by group name. Callers that need to observe or update
+// per-proxy runtime state (health status, latency, weight) must go through
+// these pointers — copying the entries would detach them from routing.
+func (gm *GroupManager) GroupProxies() map[string][]*config.ProxyEntry {
 	gm.mu.RLock()
 	defer gm.mu.RUnlock()
-	out := make([]*config.ProxyGroup, 0, len(gm.groups))
+	out := make(map[string][]*config.ProxyEntry, len(gm.groups))
 	for name, g := range gm.groups {
-		pg := &config.ProxyGroup{Name: name, RotationMode: g.Mode}
-		pg.Proxies = make([]config.ProxyEntry, 0, len(g.Proxies))
-		for _, p := range g.Proxies {
-			pg.Proxies = append(pg.Proxies, *p)
-		}
-		out = append(out, pg)
+		ptrs := make([]*config.ProxyEntry, len(g.Proxies))
+		copy(ptrs, g.Proxies)
+		out[name] = ptrs
 	}
 	return out
 }
@@ -160,6 +163,7 @@ func (gm *GroupManager) Reload(groups []config.ProxyGroup, mappings []config.Por
 	gm.groups = newGm.groups
 	gm.portMap = newGm.portMap
 	gm.portProxyMap = newGm.portProxyMap
+	gm.mappings = newGm.mappings
 	gm.mu.Unlock()
 	return nil
 }
@@ -173,6 +177,20 @@ func (gm *GroupManager) UpdateGroupProxies(groupName string, proxies []*config.P
 		return fmt.Errorf("unknown group: %s", groupName)
 	}
 	g.Proxies = proxies
+	// Rebuild this group's 1:1 port→proxy bindings: proxies appended by an
+	// import previously never received a port until the next full reload.
+	for _, m := range gm.mappings {
+		if m.GroupName != groupName {
+			continue
+		}
+		for p := m.PortStart; p <= m.PortEnd; p++ {
+			if idx := p - m.PortStart; idx < len(proxies) {
+				gm.portProxyMap[p] = proxies[idx]
+			} else {
+				delete(gm.portProxyMap, p)
+			}
+		}
+	}
 	gm.mu.Unlock()
 	g.Rotator.UpdateProxies(proxies)
 	return nil

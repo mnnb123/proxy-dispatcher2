@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"proxy-dispatcher/internal/config"
@@ -12,9 +11,8 @@ func (s *Server) handleGetBandwidthBudget(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handlePostBandwidthBudget(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req config.BudgetConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}

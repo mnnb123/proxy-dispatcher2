@@ -192,19 +192,23 @@ func (sf *SizeForwarder) BypassStats() ([]BypassEvent, int64) {
 // the domain to bypass rules if the accumulated total exceeds the threshold.
 func (sf *SizeForwarder) Forward(ctx context.Context, client net.Conn, proxyConn net.Conn, reqInfo *RequestInfo, consumedReqBytes []byte, listenPort int) (SizeForwardResult, error) {
 	domain := reqInfo.Host
+	sf.mu.Lock()
 	cfg := sf.deps.AutoBypassCfg
+	sf.mu.Unlock()
 
 	// Budget check.
 	budgetResult := sf.deps.BudgetCtrl.CheckBudget(domain)
 	if !budgetResult.Allowed {
-		proxyConn.Close()
 		switch budgetResult.Action {
 		case "direct":
+			proxyConn.Close()
 			return sf.retryDirect(ctx, client, reqInfo, consumedReqBytes)
 		case "drop":
+			proxyConn.Close()
 			client.Close()
 			return SizeForwardResult{}, fmt.Errorf("budget exceeded, dropped")
 		default:
+			// Unknown / "log only" action: keep serving through the proxy.
 			pr := Pipe(ctx, client, proxyConn, sf.deps.IdleTimeout)
 			sf.deps.Tracker.Record(domain, pr.BytesSent+pr.BytesReceived, "proxy")
 			return SizeForwardResult{PipeResult: pr}, nil

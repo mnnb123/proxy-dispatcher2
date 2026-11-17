@@ -80,6 +80,10 @@ func (sm *SyncMaster) PushToAll() []SyncResult {
 			res := sm.pushToOne(node, body, sig)
 			mu.Lock()
 			results = append(results, res)
+			mu.Unlock()
+			// slaveStatus is read by GetSlaveStatus under sm.mu — use the
+			// same mutex here, not the local results mutex.
+			sm.mu.Lock()
 			if st, ok := sm.slaveStatus[node.Name]; ok {
 				if res.Success {
 					st.LastSync = time.Now().Unix()
@@ -90,7 +94,7 @@ func (sm *SyncMaster) PushToAll() []SyncResult {
 					st.Status = "error"
 				}
 			}
-			mu.Unlock()
+			sm.mu.Unlock()
 		}(n)
 	}
 	go func() { wg.Wait(); close(done) }()
@@ -98,6 +102,12 @@ func (sm *SyncMaster) PushToAll() []SyncResult {
 	case <-done:
 	case <-time.After(30 * time.Second):
 	}
+	// Snapshot: on timeout, stragglers may still append to results.
+	mu.Lock()
+	out := make([]SyncResult, len(results))
+	copy(out, results)
+	mu.Unlock()
+	results = out
 	return results
 }
 

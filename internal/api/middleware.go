@@ -45,6 +45,11 @@ func AuthMiddleware(userMgr *auth.UserManager, tokenMgr *auth.TokenManager, jwtS
 				return
 			}
 			required := auth.MatchEndpointPermission(r.Method, r.URL.Path)
+			if required == "" && r.Method != http.MethodGet && r.Method != http.MethodHead {
+				// Fail closed: a mutating route that nobody mapped to a
+				// permission is admin-only rather than open to any login.
+				required = "*"
+			}
 			if required != "" && !auth.HasPermission(authCtx, required) {
 				respondError(w, http.StatusForbidden, "forbidden: need "+required)
 				return
@@ -90,14 +95,19 @@ func resolveAuth(r *http.Request, userMgr *auth.UserManager, tokenMgr *auth.Toke
 	}
 	var role string
 	if userMgr != nil {
-		if u := userMgr.GetUser(uname); u != nil {
-			if u.Disabled {
-				return nil, http.ErrNoCookie
-			}
-			role = u.Role
+		u := userMgr.GetUser(uname)
+		if u == nil {
+			// The account was deleted/renamed after the JWT was issued. Reject
+			// instead of silently falling through to the admin default below.
+			return nil, http.ErrNoCookie
 		}
+		if u.Disabled {
+			return nil, http.ErrNoCookie
+		}
+		role = u.Role
 	}
 	if role == "" {
+		// Legacy single-admin mode (no user manager).
 		role = "admin"
 	}
 	return &auth.AuthContext{
@@ -155,16 +165,30 @@ func respondError(w http.ResponseWriter, status int, msg string) {
 	respondJSON(w, status, map[string]string{"error": msg})
 }
 
+// getClientIP returns the caller's IP. X-Forwarded-For is honoured only
+// when the direct peer is a loopback/private address (i.e. a reverse proxy
+// on the same host or LAN); a remote client cannot spoof it to dodge the
+// login rate limiter or IP bans.
 func getClientIP(r *http.Request) string {
-	if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
-		if i := strings.Index(xf, ","); i >= 0 {
-			return strings.TrimSpace(xf[:i])
-		}
-		return strings.TrimSpace(xf)
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if xf := r.Header.Get("X-Forwarded-For"); xf != "" && isTrustedProxyAddr(host) {
+		if i := strings.Index(xf, ","); i >= 0 {
+			xf = xf[:i]
+		}
+		if fwd := strings.TrimSpace(xf); net.ParseIP(fwd) != nil {
+			return fwd
+		}
 	}
 	return host
+}
+
+func isTrustedProxyAddr(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }

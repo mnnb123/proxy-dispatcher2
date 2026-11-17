@@ -56,8 +56,14 @@ var _ net.Conn = (*PrefixConn)(nil)
 // ExtractHTTPTarget reads just enough from buffConn to determine the
 // target host and request type. All consumed bytes are recorded so they
 // can be replayed via PrefixConn.
+//
+// It reads through buffConn's own bufio.Reader rather than wrapping it in a
+// second one: a second buffer would read ahead past the header terminator
+// and silently swallow whatever followed (a POST body, or early TLS bytes
+// after CONNECT), because those bytes would live in a reader that is thrown
+// away when this function returns.
 func ExtractHTTPTarget(buffConn *BufferedConn) (*RequestInfo, error) {
-	reader := bufio.NewReaderSize(buffConn, 4096)
+	reader := buffConn.reader
 	var consumed bytes.Buffer
 
 	line, err := readLine(reader)

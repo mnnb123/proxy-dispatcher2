@@ -16,8 +16,8 @@ type DomainStat struct {
 	BytesThisDay    atomic.Int64
 	RequestCount    atomic.Int64
 	LastSeen        atomic.Int64
-	AvgResponseSize int64
-	SampleCount     int64
+	AvgResponseSize atomic.Int64
+	SampleCount     atomic.Int64
 	ProxyBytes      atomic.Int64
 	DirectBytes     atomic.Int64
 }
@@ -43,15 +43,15 @@ type TrackerSnapshot struct {
 
 // Tracker records bandwidth usage globally and per-domain.
 type Tracker struct {
-	domainStats     map[string]*DomainStat
-	mu              sync.RWMutex
-	totalProxyBytes atomic.Int64
+	domainStats      map[string]*DomainStat
+	mu               sync.RWMutex
+	totalProxyBytes  atomic.Int64
 	totalDirectBytes atomic.Int64
 	totalBlockedReqs atomic.Int64
 	totalProxyReqs   atomic.Int64
 	totalBypassReqs  atomic.Int64
-	currentDay      string
-	logger          *slog.Logger
+	currentDay       string
+	logger           *slog.Logger
 }
 
 // NewTracker creates an empty Tracker.
@@ -107,9 +107,20 @@ func (t *Tracker) Record(domain string, bytes int64, routeType string) {
 		ds.DirectBytes.Add(bytes)
 	}
 
-	// Rolling average: incremental update.
-	ds.SampleCount++
-	ds.AvgResponseSize = ds.AvgResponseSize + (bytes-ds.AvgResponseSize)/ds.SampleCount
+	// Rolling average: incremental update. Both fields are atomics and the
+	// divisor is the local n: the old plain-int version raced with
+	// ResetDaily (SampleCount = 0) and could divide by zero.
+	n := ds.SampleCount.Add(1)
+	if n <= 0 {
+		n = 1
+	}
+	for {
+		old := ds.AvgResponseSize.Load()
+		nv := old + (bytes-old)/n
+		if ds.AvgResponseSize.CompareAndSwap(old, nv) {
+			break
+		}
+	}
 }
 
 // GetDomainBytesThisHour returns the hourly byte count for a domain.
@@ -131,7 +142,7 @@ func (t *Tracker) GetDomainAvgSize(domain string) int64 {
 	if !ok {
 		return 0
 	}
-	return ds.AvgResponseSize
+	return ds.AvgResponseSize.Load()
 }
 
 // GetTotalProxyBytesToday returns the total proxy bytes for the current day.
@@ -156,7 +167,7 @@ func (t *Tracker) GetSnapshot() TrackerSnapshot {
 			Domain:       ds.Domain,
 			BytesTotal:   ds.BytesThisDay.Load(),
 			RequestCount: ds.RequestCount.Load(),
-			AvgSize:      ds.AvgResponseSize,
+			AvgSize:      ds.AvgResponseSize.Load(),
 			RouteType:    rt,
 		})
 	}
@@ -195,8 +206,8 @@ func (t *Tracker) ResetDaily() {
 	for _, ds := range t.domainStats {
 		ds.BytesThisDay.Store(0)
 		ds.RequestCount.Store(0)
-		ds.SampleCount = 0
-		ds.AvgResponseSize = 0
+		ds.SampleCount.Store(0)
+		ds.AvgResponseSize.Store(0)
 		ds.ProxyBytes.Store(0)
 		ds.DirectBytes.Store(0)
 	}

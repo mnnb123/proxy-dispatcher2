@@ -59,8 +59,10 @@ func startBackgroundTasks(
 				tracker.ResetHourly()
 				tracker.Cleanup()
 				reportHub.Agg.RollupMinuteToHour()
-			case <-daily.C:
+				// Hour buckets are pruned after keepHours; rolling them into
+				// days only once a day lost whatever had already expired.
 				reportHub.Agg.RollupHourToDay()
+			case <-daily.C:
 				tokenMgr.Cleanup()
 			}
 		}

@@ -90,10 +90,20 @@ func (dl *DiskLogger) Write(entry *LogEntry) {
 func (dl *DiskLogger) writeLoop() {
 	defer close(dl.done)
 	for entry := range dl.writeCh {
-		if !dl.enabled || dl.currentFile == nil {
+		if !dl.enabled {
 			continue
 		}
+		if dl.currentFile == nil {
+			// A previous open failed (disk full, permissions...). Retry
+			// rather than dropping everything until the next date change.
+			if err := dl.openFile(); err != nil {
+				continue
+			}
+		}
 		dl.checkRotate()
+		if dl.currentFile == nil {
+			continue
+		}
 		line := entry.ToDiskLine()
 		n, err := dl.currentFile.WriteString(line)
 		if err != nil {
@@ -106,16 +116,30 @@ func (dl *DiskLogger) writeLoop() {
 
 func (dl *DiskLogger) checkRotate() {
 	today := time.Now().Format("2006-01-02")
-	needRotate := today != dl.currentDate
-	if dl.maxSizeMB > 0 && dl.currentSize >= int64(dl.maxSizeMB)*1024*1024 {
-		needRotate = true
-	}
-	if !needRotate {
+	dateChanged := today != dl.currentDate
+	sizeExceeded := dl.maxSizeMB > 0 && dl.currentSize >= int64(dl.maxSizeMB)*1024*1024
+	if !dateChanged && !sizeExceeded {
 		return
 	}
 	dl.currentFile.Close()
-	dl.openFile()
-	go dl.cleanOldFiles()
+	dl.currentFile = nil
+	if sizeExceeded && !dateChanged {
+		// Reopening the same access-<date>.log in O_APPEND would be a no-op
+		// (size still over the limit → close/open/scan on every write).
+		// Move the full file aside so a fresh one starts at size 0.
+		cur := filepath.Join(dl.basePath, "access-"+dl.currentDate+".log")
+		rotated := filepath.Join(dl.basePath, "access-"+dl.currentDate+"."+time.Now().Format("150405")+".log")
+		if err := os.Rename(cur, rotated); err != nil {
+			dl.logger.Error("log rotate rename failed", "error", err)
+		}
+	}
+	if err := dl.openFile(); err != nil {
+		dl.logger.Error("log reopen failed", "error", err)
+		return
+	}
+	if dateChanged {
+		go dl.cleanOldFiles()
+	}
 }
 
 func (dl *DiskLogger) cleanOldFiles() {
@@ -130,6 +154,9 @@ func (dl *DiskLogger) cleanOldFiles() {
 		}
 		date := strings.TrimPrefix(e.Name(), "access-")
 		date = strings.TrimSuffix(date, ".log")
+		if len(date) > 10 {
+			date = date[:10] // strip ".HHMMSS" suffix of size-rotated files
+		}
 		if date < cutoff {
 			os.Remove(filepath.Join(dl.basePath, e.Name()))
 			dl.logger.Info("removed old log", "file", e.Name())

@@ -3,18 +3,19 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// ListenerManager manages a set of TCP listeners on a range of ports.
+// ListenerManager manages a set of TCP listeners keyed by port.
 type ListenerManager struct {
-	listeners      []net.Listener
-	ports          []int
+	active         map[int]net.Listener
 	handler        func(net.Conn)
 	wg             sync.WaitGroup
 	connCount      map[int]*atomic.Int32
@@ -26,6 +27,7 @@ type ListenerManager struct {
 // NewListenerManager constructs a ListenerManager.
 func NewListenerManager(maxConnPerPort int, handler func(net.Conn), logger *slog.Logger) *ListenerManager {
 	return &ListenerManager{
+		active:         make(map[int]net.Listener),
 		handler:        handler,
 		connCount:      make(map[int]*atomic.Int32),
 		maxConnPerPort: maxConnPerPort,
@@ -33,56 +35,120 @@ func NewListenerManager(maxConnPerPort int, handler func(net.Conn), logger *slog
 	}
 }
 
-// Start begins listening on the given port range. It returns an error only
-// when no ports could be opened.
+// openLocked starts listening on port. Caller must hold lm.mu.
+func (lm *ListenerManager) openLocked(port int) error {
+	if _, ok := lm.active[port]; ok {
+		return nil
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+	if err != nil {
+		return err
+	}
+	lm.active[port] = ln
+	counter, ok := lm.connCount[port]
+	if !ok {
+		counter = &atomic.Int32{}
+		lm.connCount[port] = counter
+	}
+	go lm.acceptLoop(ln, port, counter)
+	return nil
+}
+
+// Start begins listening on the given port range, in addition to whatever
+// is already open. It returns an error only when no port of the range could
+// be opened.
 func (lm *ListenerManager) Start(startPort int, count int) error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
+	opened := 0
 	for port := startPort; port < startPort+count; port++ {
-		addr := fmt.Sprintf("0.0.0.0:%d", port)
-		ln, err := net.Listen("tcp", addr)
-		if err != nil {
+		if err := lm.openLocked(port); err != nil {
 			lm.logger.Warn("cannot listen on port, skipping", "port", port, "error", err)
 			continue
 		}
-		lm.listeners = append(lm.listeners, ln)
-		lm.ports = append(lm.ports, port)
-		lm.connCount[port] = &atomic.Int32{}
-		go lm.acceptLoop(ln, port)
+		opened++
 	}
-
-	if len(lm.listeners) == 0 {
+	if opened == 0 {
 		return fmt.Errorf("no listeners could be started in range %d-%d", startPort, startPort+count-1)
 	}
-	lm.logger.Info("listeners started", "count", len(lm.listeners))
+	lm.logger.Info("listeners started", "range_start", startPort, "opened", opened, "total", len(lm.active))
 	return nil
 }
 
-func (lm *ListenerManager) acceptLoop(listener net.Listener, port int) {
+// Reconcile makes the set of listening ports equal to want: ports no longer
+// wanted are closed, missing ones are opened, and ports present in both are
+// left completely untouched (their in-flight and future connections are not
+// disturbed). It returns the ports that could not be opened.
+//
+// This replaces the old "Restart(range)" pattern, which closed every
+// listener and then opened a single range — with several port mappings only
+// the last one survived a reload.
+func (lm *ListenerManager) Reconcile(want []int) (failed []int) {
+	wantSet := make(map[int]bool, len(want))
+	for _, p := range want {
+		if p > 0 && p <= 65535 {
+			wantSet[p] = true
+		}
+	}
+
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	closed := 0
+	for port, ln := range lm.active {
+		if !wantSet[port] {
+			_ = ln.Close()
+			delete(lm.active, port)
+			closed++
+		}
+	}
+	opened := 0
+	for port := range wantSet {
+		if _, ok := lm.active[port]; ok {
+			continue
+		}
+		if err := lm.openLocked(port); err != nil {
+			lm.logger.Warn("cannot listen on port, skipping", "port", port, "error", err)
+			failed = append(failed, port)
+			continue
+		}
+		opened++
+	}
+	sort.Ints(failed)
+	if opened > 0 || closed > 0 || len(failed) > 0 {
+		lm.logger.Info("listeners reconciled", "opened", opened, "closed", closed, "failed", len(failed), "total", len(lm.active))
+	}
+	return failed
+}
+
+func (lm *ListenerManager) acceptLoop(listener net.Listener, port int, counter *atomic.Int32) {
 	defer func() {
 		if r := recover(); r != nil {
 			lm.logger.Error("acceptLoop panic", "port", port, "recover", r)
 		}
 	}()
 
-	// Capture counter once so it's safe even if connCount map is replaced.
-	lm.mu.RLock()
-	counter := lm.connCount[port]
-	lm.mu.RUnlock()
-	if counter == nil {
-		return
-	}
-
+	var delay time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue
+			if errors.Is(err, net.ErrClosed) {
+				lm.logger.Debug("listener closed", "port", port)
+				return
 			}
-			lm.logger.Info("listener closed", "port", port)
-			return
+			// Transient failure (e.g. EMFILE "too many open files"): back off
+			// and keep accepting instead of silently abandoning the port.
+			if delay == 0 {
+				delay = 5 * time.Millisecond
+			} else if delay *= 2; delay > time.Second {
+				delay = time.Second
+			}
+			lm.logger.Warn("accept error, retrying", "port", port, "error", err, "backoff", delay)
+			time.Sleep(delay)
+			continue
 		}
+		delay = 0
 
 		if counter.Load() >= int32(lm.maxConnPerPort) {
 			lm.logger.Warn("max connections reached, rejecting", "port", port)
@@ -111,8 +177,9 @@ func (lm *ListenerManager) handleConn(conn net.Conn, port int, counter *atomic.I
 // with a 30-second grace period.
 func (lm *ListenerManager) Stop() error {
 	lm.mu.Lock()
-	for _, ln := range lm.listeners {
+	for port, ln := range lm.active {
 		_ = ln.Close()
+		delete(lm.active, port)
 	}
 	lm.mu.Unlock()
 
@@ -130,31 +197,28 @@ func (lm *ListenerManager) Stop() error {
 	return nil
 }
 
-// Restart stops all current listeners and starts new ones on the given port range.
+// Restart makes [startPort, startPort+count) the only listening range.
+// Kept for callers with a single range; prefer Reconcile.
 func (lm *ListenerManager) Restart(startPort int, count int) error {
-	// Close existing listeners but keep connCount for in-flight goroutines.
-	lm.mu.Lock()
-	for _, ln := range lm.listeners {
-		_ = ln.Close()
+	want := make([]int, 0, count)
+	for p := startPort; p < startPort+count; p++ {
+		want = append(want, p)
 	}
-	lm.listeners = nil
-	lm.ports = nil
-	lm.mu.Unlock()
-
-	// Brief grace period for accept loops to exit.
-	time.Sleep(100 * time.Millisecond)
-
-	if count <= 0 {
-		return nil
+	failed := lm.Reconcile(want)
+	if count > 0 && len(failed) == count {
+		return fmt.Errorf("no listeners could be started in range %d-%d", startPort, startPort+count-1)
 	}
-	return lm.Start(startPort, count)
+	return nil
 }
 
-// ActivePorts returns the list of ports currently being listened on.
+// ActivePorts returns the sorted list of ports currently being listened on.
 func (lm *ListenerManager) ActivePorts() []int {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	out := make([]int, len(lm.ports))
-	copy(out, lm.ports)
+	out := make([]int, 0, len(lm.active))
+	for p := range lm.active {
+		out = append(out, p)
+	}
+	sort.Ints(out)
 	return out
 }
