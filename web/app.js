@@ -483,7 +483,55 @@ async function loadWhitelist() {
   if (ip.ok) document.getElementById('myIpDisplay').textContent = 'Your IP: ' + ip.data.ip;
 
   loadBannedIPs();
+  loadOutputAccounts();
 }
+
+// ── Output accounts (user/pass on output ports) ────────────
+async function loadOutputAccounts() {
+  const r = await apiCall('GET', '/api/config/whitelist/accounts');
+  const c = document.getElementById('oaTable');
+  if (!r.ok) { c.innerHTML = ''; return; }
+  const list = r.data.accounts || [];
+  const warn = document.getElementById('oaWarn');
+  if (list.length && !r.data.whitelist_enabled) {
+    setMsg('oaWarn', 'Whitelist đang tắt nên cổng output đang mở cho mọi IP, chưa yêu cầu user/pass. Bật "Enable Whitelist" để áp dụng.', true);
+  } else { warn.textContent = ''; warn.className = 'msg'; }
+  if (!list.length) { c.innerHTML = '<p class="text-muted">Chưa có tài khoản nào.</p>'; return; }
+  let html = '<table class="data-table"><thead><tr><th>User</th><th>Pass</th><th>Ghi chú</th><th></th></tr></thead><tbody>';
+  list.forEach((a, i) => {
+    html += '<tr><td>' + escH(a.user) + '</td><td>' + escH(a.pass) + '</td><td>' + escH(a.note || '') + '</td>' +
+      '<td><button class="btn btn-xs" data-oa-copy="' + i + '">Copy</button> ' +
+      '<button class="btn btn-xs btn-danger" data-oa-del="' + i + '">X</button></td></tr>';
+  });
+  c.innerHTML = html + '</tbody></table>';
+  c.querySelectorAll('[data-oa-copy]').forEach(b => b.addEventListener('click', () => {
+    const a = list[+b.dataset.oaCopy];
+    copyToClipboard(a.user + ':' + a.pass);
+    setMsg('oaMsg', 'Đã copy ' + a.user + ':…', false);
+  }));
+  c.querySelectorAll('[data-oa-del]').forEach(b => b.addEventListener('click', async () => {
+    const a = list[+b.dataset.oaDel];
+    if (!confirm('Xóa tài khoản "' + a.user + '"? Client đang dùng tài khoản này sẽ không kết nối mới được.')) return;
+    const d = await apiCall('DELETE', '/api/config/whitelist/accounts', { user: a.user });
+    if (!d.ok) { setMsg('oaMsg', d.data.error || 'Failed', true); return; }
+    setMsg('oaMsg', 'Đã xóa ' + a.user, false);
+    loadOutputAccounts();
+  }));
+}
+
+document.getElementById('oaSaveBtn').addEventListener('click', async () => {
+  const body = {
+    user: document.getElementById('oaUser').value.trim(),
+    pass: document.getElementById('oaPass').value,
+    note: document.getElementById('oaNote').value,
+  };
+  if (!body.user) { setMsg('oaMsg', 'Nhập user', true); return; }
+  const r = await apiCall('POST', '/api/config/whitelist/accounts', body);
+  if (!r.ok) { setMsg('oaMsg', r.data.error || 'Failed', true); return; }
+  setMsg('oaMsg', 'Đã lưu: ' + r.data.account.user + ':' + r.data.account.pass, false);
+  ['oaUser', 'oaPass', 'oaNote'].forEach(id => { document.getElementById(id).value = ''; });
+  loadOutputAccounts();
+});
 
 async function loadBannedIPs() {
   const banned = await apiCall('GET', '/api/config/whitelist/banned');
@@ -573,7 +621,10 @@ async function saveWhitelistConfig() {
 document.getElementById('saveWlConfigBtn').addEventListener('click', saveWhitelistConfig);
 
 // Auto-save when Enable Whitelist checkbox is toggled.
-document.getElementById('wlEnabled').addEventListener('change', saveWhitelistConfig);
+document.getElementById('wlEnabled').addEventListener('change', async () => {
+  await saveWhitelistConfig();
+  loadOutputAccounts();
+});
 
 // ── Auto Bypass ────────────────────────────────────────────
 async function loadAutoBypass() {

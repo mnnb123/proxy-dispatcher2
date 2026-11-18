@@ -114,11 +114,24 @@ type AutoBanConfig struct {
 	BanDurationSec int  `json:"ban_duration_sec"`
 }
 
+// OutputAccount is a user/password a client may present on an output port
+// (HTTP Proxy-Authorization or SOCKS5 username/password) when its IP is not
+// whitelisted.
+type OutputAccount struct {
+	User      string `json:"user"`
+	Pass      string `json:"pass"`
+	Note      string `json:"note,omitempty"`
+	CreatedAt int64  `json:"created_at,omitempty"`
+}
+
 // WhitelistConfig holds IP whitelist settings.
 type WhitelistConfig struct {
 	Enabled bool             `json:"enabled"`
 	Entries []WhitelistEntry `json:"entries"`
 	AutoBan AutoBanConfig    `json:"auto_ban"`
+	// Accounts let clients outside the IP whitelist authenticate with
+	// user/pass. Only consulted while the whitelist is enabled.
+	Accounts []OutputAccount `json:"accounts,omitempty"`
 }
 
 // AutoBypassConfig controls automatic large-content bypass.

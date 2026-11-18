@@ -1,8 +1,11 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"proxy-dispatcher/internal/config"
@@ -12,11 +15,114 @@ import (
 func (s *Server) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
 	entries := s.whitelistMgr.GetEntries()
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled":  s.cfg.Whitelist.Enabled,
-		"entries":  entries,
-		"auto_ban": s.cfg.Whitelist.AutoBan,
-		"count":    len(entries),
+		"enabled":       s.cfg.Whitelist.Enabled,
+		"entries":       entries,
+		"auto_ban":      s.cfg.Whitelist.AutoBan,
+		"count":         len(entries),
+		"account_count": len(s.cfg.Whitelist.Accounts),
 	})
+}
+
+// handleGetOutputAccounts lists the user/pass accounts accepted on output
+// ports. Passwords are included: the operator hands them to clients.
+func (s *Server) handleGetOutputAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts := append([]config.OutputAccount{}, s.cfg.Whitelist.Accounts...)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"accounts":          accounts,
+		"whitelist_enabled": s.cfg.Whitelist.Enabled,
+	})
+}
+
+func validCredPart(v string, max int) bool {
+	if v == "" || len(v) > max {
+		return false
+	}
+	for _, c := range v {
+		if c <= 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// handlePostOutputAccount adds an account, or updates the password/note of
+// an existing one. An empty password generates a random one.
+func (s *Server) handlePostOutputAccount(w http.ResponseWriter, r *http.Request) {
+	var req config.OutputAccount
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "bad json")
+		return
+	}
+	req.User = strings.TrimSpace(req.User)
+	if !validCredPart(req.User, 64) || strings.Contains(req.User, ":") {
+		respondError(w, http.StatusBadRequest, "user: 1-64 ky tu, khong chua dau cach hoac dau ':'")
+		return
+	}
+	if req.Pass == "" {
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			respondError(w, http.StatusInternalServerError, "could not generate password")
+			return
+		}
+		req.Pass = hex.EncodeToString(b)
+	}
+	if !validCredPart(req.Pass, 128) {
+		respondError(w, http.StatusBadRequest, "pass: toi da 128 ky tu, khong chua dau cach")
+		return
+	}
+
+	prev := s.cfg.Whitelist.Accounts
+	next := make([]config.OutputAccount, 0, len(prev)+1)
+	updated := false
+	for _, a := range prev {
+		if a.User == req.User {
+			a.Pass, a.Note = req.Pass, req.Note
+			updated = true
+		}
+		next = append(next, a)
+	}
+	if !updated {
+		if len(next) >= 1000 {
+			respondError(w, http.StatusBadRequest, "too many accounts (max 1000)")
+			return
+		}
+		req.CreatedAt = time.Now().Unix()
+		next = append(next, req)
+	}
+	s.saveOutputAccounts(w, prev, next, req)
+}
+
+func (s *Server) handleDeleteOutputAccount(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		User string `json:"user"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		respondError(w, http.StatusBadRequest, "bad json")
+		return
+	}
+	prev := s.cfg.Whitelist.Accounts
+	next := make([]config.OutputAccount, 0, len(prev))
+	for _, a := range prev {
+		if a.User != req.User {
+			next = append(next, a)
+		}
+	}
+	if len(next) == len(prev) {
+		respondError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	s.saveOutputAccounts(w, prev, next, config.OutputAccount{User: req.User})
+}
+
+func (s *Server) saveOutputAccounts(w http.ResponseWriter, prev, next []config.OutputAccount, acc config.OutputAccount) {
+	s.cfg.Whitelist.Accounts = next
+	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
+		s.cfg.Whitelist.Accounts = prev
+		respondError(w, http.StatusInternalServerError, "save failed")
+		return
+	}
+	s.whitelistMgr.SetAccounts(next)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "account": acc})
 }
 
 func (s *Server) handlePostWhitelist(w http.ResponseWriter, r *http.Request) {
@@ -25,6 +131,9 @@ func (s *Server) handlePostWhitelist(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "bad json")
 		return
 	}
+	// Output accounts are managed by their own endpoints; this form does not
+	// send them, so keep the stored ones.
+	req.Accounts = s.cfg.Whitelist.Accounts
 	if err := s.whitelistMgr.Reload(req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid whitelist: "+err.Error())
 		return

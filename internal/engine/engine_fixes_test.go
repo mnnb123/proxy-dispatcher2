@@ -237,3 +237,39 @@ func TestUpdateGroupProxiesRebindsPorts(t *testing.T) {
 		t.Fatalf("port 30000 binding changed: %+v", p0)
 	}
 }
+
+func TestExtractStripsProxyAuthorization(t *testing.T) {
+	for _, req := range []string{
+		"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nproxy-authorization: Basic dTpw\r\n\r\n",
+		"POST http://example.com/x HTTP/1.1\r\nProxy-Authorization: Basic dTpw\r\nHost: example.com\r\nContent-Length: 4\r\n\r\nBODY",
+	} {
+		client, server := net.Pipe()
+		go func() { _, _ = client.Write([]byte(req)) }()
+		_, bc, err := DetectProtocol(server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := ExtractHTTPTarget(bc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.ProxyAuth != "Basic dTpw" {
+			t.Fatalf("ProxyAuth = %q", info.ProxyAuth)
+		}
+		if strings.Contains(strings.ToLower(string(info.ConsumedBytes)), "proxy-authorization") {
+			t.Fatalf("header not stripped: %q", info.ConsumedBytes)
+		}
+		if !strings.HasSuffix(string(info.ConsumedBytes), "\r\n\r\n") || !strings.Contains(string(info.ConsumedBytes), "Host: example.com") {
+			t.Fatalf("head damaged: %q", info.ConsumedBytes)
+		}
+		u, p, ok := ParseProxyBasicAuth(info.ProxyAuth)
+		if !ok || u != "u" || p != "p" {
+			t.Fatalf("parse = %q %q %v", u, p, ok)
+		}
+		client.Close()
+		server.Close()
+	}
+	if _, _, ok := ParseProxyBasicAuth("Bearer x"); ok {
+		t.Fatal("non-basic accepted")
+	}
+}

@@ -21,6 +21,10 @@ type RequestInfo struct {
 	RawLine       string
 	IsHTTPS       bool
 	ConsumedBytes []byte
+	// ProxyAuth is the client's Proxy-Authorization value. The header is
+	// removed from ConsumedBytes: it is addressed to this proxy and must not
+	// reach the upstream proxy or the origin server.
+	ProxyAuth string
 }
 
 // PrefixConn prepends already-consumed bytes before the real connection,
@@ -96,6 +100,7 @@ func ExtractHTTPTarget(buffConn *BufferedConn) (*RequestInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read CONNECT headers: %w", err)
 		}
+		hdrs, info.ProxyAuth = stripHeader(hdrs, "Proxy-Authorization")
 		consumed.Write(hdrs)
 		info.ConsumedBytes = consumed.Bytes()
 		return info, nil
@@ -107,6 +112,7 @@ func ExtractHTTPTarget(buffConn *BufferedConn) (*RequestInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read headers: %w", err)
 	}
+	hdrs, info.ProxyAuth = stripHeader(hdrs, "Proxy-Authorization")
 	consumed.Write(hdrs)
 
 	if strings.HasPrefix(rawURL, "http://") || strings.HasPrefix(rawURL, "https://") {

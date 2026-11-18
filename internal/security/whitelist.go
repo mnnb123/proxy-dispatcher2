@@ -2,6 +2,8 @@
 package security
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,6 +22,7 @@ type WhitelistManager struct {
 	cidrNets   []*net.IPNet
 	entries    []config.WhitelistEntry
 	tempExpiry map[string]int64
+	accounts   map[string][32]byte // user -> sha256(pass)
 	mu         sync.RWMutex
 	logger     *slog.Logger
 }
@@ -58,6 +61,15 @@ func (wm *WhitelistManager) load(cfg config.WhitelistConfig) error {
 			temp[e.IP] = e.ExpiresAt
 		}
 	}
+
+	accounts := make(map[string][32]byte, len(cfg.Accounts))
+	for _, a := range cfg.Accounts {
+		if a.User == "" || a.Pass == "" {
+			continue
+		}
+		accounts[a.User] = sha256.Sum256([]byte(a.Pass))
+	}
+	wm.accounts = accounts
 
 	wm.enabled = cfg.Enabled
 	wm.exactIPs = exact
@@ -99,6 +111,38 @@ func (wm *WhitelistManager) IsAllowed(clientIP string) (bool, string) {
 	}
 
 	return false, "not whitelisted"
+}
+
+// HasAccounts reports whether any output user/pass account is configured.
+func (wm *WhitelistManager) HasAccounts() bool {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+	return len(wm.accounts) > 0
+}
+
+// CheckAccount reports whether user/pass matches a configured output account.
+func (wm *WhitelistManager) CheckAccount(user, pass string) bool {
+	wm.mu.RLock()
+	want, ok := wm.accounts[user]
+	wm.mu.RUnlock()
+	got := sha256.Sum256([]byte(pass))
+	// Compare even for unknown users so timing does not reveal which
+	// usernames exist.
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1 && ok
+}
+
+// SetAccounts replaces the output accounts without touching IP entries.
+func (wm *WhitelistManager) SetAccounts(list []config.OutputAccount) {
+	accounts := make(map[string][32]byte, len(list))
+	for _, a := range list {
+		if a.User == "" || a.Pass == "" {
+			continue
+		}
+		accounts[a.User] = sha256.Sum256([]byte(a.Pass))
+	}
+	wm.mu.Lock()
+	wm.accounts = accounts
+	wm.mu.Unlock()
 }
 
 // Matches reports whether clientIP is covered by a (non-expired) whitelist

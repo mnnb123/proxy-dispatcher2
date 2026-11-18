@@ -22,6 +22,23 @@ type Socks5Result struct {
 	BytesSent int64  // bytes sent to upstream (upload)
 	ProxyUsed string // set if a retry switched to a different proxy
 	RouteType string // "proxy", "direct", or "blocked"
+	// AuthDenied is set when client credentials were required and the
+	// session ended without a valid login. AuthTried tells a wrong
+	// user/pass apart from a client that offered none.
+	AuthDenied bool
+	AuthTried  bool
+}
+
+// credCheck adapts a validation callback to go-socks5's CredentialStore.
+type credCheck struct {
+	fn        func(user, pass string) bool
+	tried, ok bool
+}
+
+func (c *credCheck) Valid(user, password string) bool {
+	c.tried = true
+	c.ok = c.fn(user, password)
+	return c.ok
 }
 
 // countingConn wraps a net.Conn to track bytes read and written.
@@ -87,7 +104,10 @@ func (h *Socks5Handler) SetResourceProxyProvider(fn func() *config.ProxyEntry) {
 // fails and a rotator is provided, it retries with up to maxRetries
 // different proxies.
 // It returns destination info and byte counts captured during the session.
-func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry, rotator Rotator, clientIP string) (*Socks5Result, error) {
+//
+// When creds is non-nil the client must complete SOCKS5 username/password
+// authentication accepted by creds before any request is served.
+func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry, rotator Rotator, clientIP string, creds func(user, pass string) bool) (*Socks5Result, error) {
 	const maxRetries = 3
 	var result Socks5Result
 	var portOnce sync.Once
@@ -203,12 +223,24 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 		Resolver: resolver,
 		Logger:   nil,
 	}
+	var cc *credCheck
+	if creds != nil {
+		cc = &credCheck{fn: creds}
+		conf.Credentials = cc
+	}
 	server, err := socks5.New(conf)
 	if err != nil {
 		return &result, fmt.Errorf("create socks5 server: %w", err)
 	}
 
 	serveErr := server.ServeConn(clientConn)
+
+	if cc != nil && !cc.ok {
+		result.AuthDenied = true
+		result.AuthTried = cc.tried
+		result.RouteType = "blocked"
+		return &result, fmt.Errorf("socks5 authentication required")
+	}
 
 	// Collect byte counts after the session ends.
 	if counter != nil {

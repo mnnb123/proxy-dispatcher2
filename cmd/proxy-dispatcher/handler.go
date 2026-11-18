@@ -43,7 +43,8 @@ func (h *ConnHandler) Handle(conn net.Conn) {
 	startTime := time.Now()
 	clientIP := extractHost(conn.RemoteAddr().String())
 
-	if !h.checkWhitelist(conn, clientIP) {
+	ipOK, needAuth := h.checkWhitelist(conn, clientIP)
+	if !ipOK {
 		return
 	}
 
@@ -63,28 +64,50 @@ func (h *ConnHandler) Handle(conn net.Conn) {
 	defer cancel()
 
 	if proto == "socks5" {
-		h.handleSOCKS5(ctx, buffConn, group, clientIP, outputPort, startTime)
+		h.handleSOCKS5(ctx, buffConn, group, clientIP, outputPort, startTime, needAuth)
 		return
 	}
 
-	h.handleHTTP(ctx, buffConn, group, clientIP, outputPort, startTime, proto)
+	h.handleHTTP(ctx, buffConn, group, clientIP, outputPort, startTime, proto, needAuth)
 }
 
-// checkWhitelist verifies the client IP. Returns false if blocked (conn is closed).
-func (h *ConnHandler) checkWhitelist(conn net.Conn, clientIP string) bool {
+const proxyAuthRequired = "HTTP/1.1 407 Proxy Authentication Required\r\n" +
+	"Proxy-Authenticate: Basic realm=\"proxy\"\r\n" +
+	"Content-Length: 0\r\nConnection: close\r\n\r\n"
+
+// authFailed records a rejected login. Only wrong credentials count toward
+// auto-ban: a client that sent none (a browser's first request before it
+// prompts) is just told to authenticate.
+func (h *ConnHandler) authFailed(outputPort int, clientIP, proto string, tried bool) {
+	reason := "auth: credentials required"
+	if tried {
+		reason = "auth: wrong user/pass"
+		h.bruteGuard.RecordAndCheck(clientIP)
+	}
+	h.logger.Debug("client auth rejected", "ip", clientIP, "reason", reason)
+	h.record(outputPort, clientIP, "", "", "", "", proto, "blocked", "", reason, 407, 0, 0, 0)
+}
+
+// checkWhitelist verifies the client IP. ok=false means blocked (conn is
+// closed). needAuth=true means the IP is not whitelisted but output accounts
+// exist, so the client may still get in with a valid user/pass.
+func (h *ConnHandler) checkWhitelist(conn net.Conn, clientIP string) (ok, needAuth bool) {
 	// Banned IPs are rejected outright — unless covered by the whitelist.
 	if !h.whitelistMgr.Matches(clientIP) {
 		if banned, _ := h.bruteGuard.IsBanned(clientIP); banned {
 			h.logger.Debug("banned IP rejected", "ip", clientIP)
 			h.record(0, clientIP, "", "", "", "", "", "blocked", "", "banned", 403, 0, 0, 0)
 			conn.Close()
-			return false
+			return false, false
 		}
 	}
 
 	allowed, reason := h.whitelistMgr.IsAllowed(clientIP)
 	if allowed {
-		return true
+		return true, false
+	}
+	if h.whitelistMgr.HasAccounts() {
+		return true, true
 	}
 	// Never count/ban an IP that is covered by a whitelist entry
 	// (e.g. whitelist matched but rejected for another reason).
@@ -94,12 +117,12 @@ func (h *ConnHandler) checkWhitelist(conn net.Conn, clientIP string) bool {
 	h.logger.Debug("whitelist rejected", "ip", clientIP, "reason", reason)
 	h.record(0, clientIP, "", "", "", "", "", "blocked", "", "whitelist: "+reason, 403, 0, 0, 0)
 	conn.Close()
-	return false
+	return false, false
 }
 
 // handleSOCKS5 routes a SOCKS5 connection through the upstream proxy
 // (or directly if the destination matches a bypass rule).
-func (h *ConnHandler) handleSOCKS5(ctx context.Context, buffConn *engine.BufferedConn, group *engine.ManagedGroup, clientIP string, outputPort int, startTime time.Time) {
+func (h *ConnHandler) handleSOCKS5(ctx context.Context, buffConn *engine.BufferedConn, group *engine.ManagedGroup, clientIP string, outputPort int, startTime time.Time, needAuth bool) {
 	proxy, err := h.groupMgr.GetNextProxy(outputPort, clientIP)
 	if err != nil {
 		h.logger.Warn("no proxy available", "group", group.Name)
@@ -108,8 +131,16 @@ func (h *ConnHandler) handleSOCKS5(ctx context.Context, buffConn *engine.Buffere
 	}
 
 	proxyAddr := fmt.Sprintf("%s:%d", proxy.Host, proxy.Port)
-	sResult, sErr := h.socks5H.HandleConnection(ctx, buffConn, *proxy, group.Rotator, clientIP)
+	var creds func(user, pass string) bool
+	if needAuth {
+		creds = h.whitelistMgr.CheckAccount
+	}
+	sResult, sErr := h.socks5H.HandleConnection(ctx, buffConn, *proxy, group.Rotator, clientIP, creds)
 	latency := time.Since(startTime).Milliseconds()
+	if sResult != nil && sResult.AuthDenied {
+		h.authFailed(outputPort, clientIP, "socks5", sResult.AuthTried)
+		return
+	}
 
 	destHost, destPort, bytesSent, bytesRecv := extractSocksResult(sResult)
 	if sResult != nil && sResult.ProxyUsed != "" {
@@ -155,11 +186,25 @@ func (h *ConnHandler) handleSOCKS5(ctx context.Context, buffConn *engine.Buffere
 }
 
 // handleHTTP routes an HTTP/HTTPS connection based on rule evaluation.
-func (h *ConnHandler) handleHTTP(ctx context.Context, buffConn *engine.BufferedConn, group *engine.ManagedGroup, clientIP string, outputPort int, startTime time.Time, detectedProto string) {
+func (h *ConnHandler) handleHTTP(ctx context.Context, buffConn *engine.BufferedConn, group *engine.ManagedGroup, clientIP string, outputPort int, startTime time.Time, detectedProto string, needAuth bool) {
 	reqInfo, extractErr := engine.ExtractHTTPTarget(buffConn)
 	if extractErr != nil {
+		if needAuth {
+			// Cannot read credentials from an unparseable request.
+			h.authFailed(outputPort, clientIP, "http", false)
+			return
+		}
 		h.handleHTTPFallback(ctx, buffConn, group, clientIP, outputPort, startTime)
 		return
+	}
+	if needAuth {
+		user, pass, sent := engine.ParseProxyBasicAuth(reqInfo.ProxyAuth)
+		if !sent || !h.whitelistMgr.CheckAccount(user, pass) {
+			_ = buffConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_, _ = buffConn.Write([]byte(proxyAuthRequired))
+			h.authFailed(outputPort, clientIP, "http", reqInfo.ProxyAuth != "")
+			return
+		}
 	}
 
 	prefixConn := engine.NewPrefixConn(reqInfo.ConsumedBytes, buffConn)

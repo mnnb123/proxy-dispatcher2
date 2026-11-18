@@ -450,6 +450,21 @@
       </section>
 
       <section class="card">
+        <h2>Tài khoản output (user / pass)</h2>
+        <p class="text-muted text-sm">Khi Whitelist đang bật: IP trong whitelist vào thẳng, IP khác phải đăng nhập bằng một tài khoản dưới đây (HTTP và SOCKS5). Khi Whitelist tắt, mọi IP đều vào được và tài khoản không được dùng.</p>
+        <div id="oaWarn" class="msg"></div>
+        <div id="oaTable"></div>
+        <h3 style="margin-top:16px">Thêm / đổi mật khẩu</h3>
+        <div class="row">
+          <div class="col"><label for="oaUser">User</label><input type="text" id="oaUser" autocomplete="off"></div>
+          <div class="col"><label for="oaPass">Pass (bỏ trống = tự tạo)</label><input type="text" id="oaPass" autocomplete="off"></div>
+          <div class="col"><label for="oaNote">Ghi chú</label><input type="text" id="oaNote"></div>
+        </div>
+        <button class="btn btn-primary" id="oaSaveBtn">Lưu tài khoản</button>
+        <div id="oaMsg" class="msg"></div>
+      </section>
+
+      <section class="card">
         <h2>Auto Ban</h2>
         <div class="toggle-row">
           <label class="toggle-label" for="abEnabled">Enable Auto Ban</label>
