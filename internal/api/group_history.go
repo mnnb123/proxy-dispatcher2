@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,15 @@ import (
 // All functions here run under the API server's config lock (ServeHTTP):
 // writers are exclusive, so the files need no extra locking.
 
-const maxHistorySnapshots = 100
+// History size: the newest keepHistorySnapshots snapshots are always kept
+// (whole lists can be large). Beyond that, older ones survive only while
+// the file stays under maxHistorySnapshots / maxHistoryRows, which is what
+// lets thousands of one-row "swap" snapshots (one per IP change) pile up.
+const (
+	keepHistorySnapshots = 100
+	maxHistorySnapshots  = 5000
+	maxHistoryRows       = 50000
+)
 
 type histProxy struct {
 	Host       string `json:"host"`
@@ -33,6 +42,8 @@ type histProxy struct {
 	Pass       string `json:"pass,omitempty"`
 	Type       string `json:"type"`
 	ExternalIP string `json:"external_ip,omitempty"`
+	Country    string `json:"country,omitempty"`
+	IPv4Only   bool   `json:"ipv4_only,omitempty"`
 	OutputPort int    `json:"output_port,omitempty"`
 }
 
@@ -91,7 +102,10 @@ func (s *Server) snapshotProxies(group string, proxies []config.ProxyEntry, firs
 	m, mapped := s.groupMapping(group)
 	out := make([]histProxy, 0, len(proxies))
 	for i, p := range proxies {
-		hp := histProxy{Host: p.Host, Port: p.Port, User: p.User, Pass: p.Pass, Type: p.Type, ExternalIP: p.ExternalIP}
+		if p.IsEmpty() {
+			continue
+		}
+		hp := histProxy{Host: p.Host, Port: p.Port, User: p.User, Pass: p.Pass, Type: p.Type, ExternalIP: p.ExternalIP, Country: p.Country, IPv4Only: p.IPv4Only}
 		if port := m.PortStart + firstIndex + i; mapped && port <= m.PortEnd {
 			hp.OutputPort = port
 		}
@@ -113,9 +127,15 @@ func (s *Server) pushHistory(group, reason string, rows []histProxy) error {
 		Proxies: rows,
 	}
 	hf.Snapshots = append([]histSnapshot{snap}, hf.Snapshots...)
-	if len(hf.Snapshots) > maxHistorySnapshots {
-		hf.Snapshots = hf.Snapshots[:maxHistorySnapshots]
+	total, keep := 0, len(hf.Snapshots)
+	for i, sn := range hf.Snapshots {
+		total += len(sn.Proxies)
+		if i >= keepHistorySnapshots && (i >= maxHistorySnapshots || total > maxHistoryRows) {
+			keep = i
+			break
+		}
 	}
+	hf.Snapshots = hf.Snapshots[:keep]
 	return s.saveHistory(group, hf)
 }
 
@@ -151,15 +171,76 @@ type publicRow struct {
 	User       string `json:"user,omitempty"`
 	Type       string `json:"type"`
 	ExternalIP string `json:"external_ip,omitempty"`
+	Country    string `json:"country,omitempty"`
 	OutputPort int    `json:"output_port,omitempty"`
 }
 
 func toPublicRows(rows []histProxy) []publicRow {
 	out := make([]publicRow, len(rows))
 	for i, p := range rows {
-		out[i] = publicRow{Index: i, Host: p.Host, Port: p.Port, User: p.User, Type: p.Type, ExternalIP: p.ExternalIP, OutputPort: p.OutputPort}
+		out[i] = publicRow{Index: i, Host: p.Host, Port: p.Port, User: p.User, Type: p.Type, ExternalIP: p.ExternalIP, Country: p.Country, OutputPort: p.OutputPort}
 	}
 	return out
+}
+
+// GET /api/groups/{name}/ips
+// Every distinct public IP the group has had: the ones serving a port now
+// first (by port), then the ones only left in history, newest first. A
+// history IP carries the snapshot row to re-attach it from.
+func (s *Server) handleGetGroupIPs(w http.ResponseWriter, r *http.Request) {
+	idx, ok := s.historyGroup(w, r)
+	if !ok {
+		return
+	}
+	g := &s.cfg.ProxyGroups[idx]
+	type ipRow struct {
+		InUse      bool   `json:"in_use"`
+		SnapshotID string `json:"snapshot_id,omitempty"`
+		LastAt     int64  `json:"last_at,omitempty"`  // newest history snapshot holding it
+		FirstAt    int64  `json:"first_at,omitempty"` // oldest history snapshot holding it
+		publicRow
+	}
+	rows := make([]*ipRow, 0, len(g.Proxies))
+	byIP := make(map[string]*ipRow)
+	noIP := 0
+	for _, hp := range s.snapshotProxies(g.Name, g.Proxies, 0) {
+		if hp.ExternalIP == "" {
+			noIP++
+			continue
+		}
+		if byIP[hp.ExternalIP] != nil {
+			continue
+		}
+		row := &ipRow{InUse: true, publicRow: toPublicRows([]histProxy{hp})[0]}
+		byIP[hp.ExternalIP] = row
+		rows = append(rows, row)
+	}
+	inUse := len(rows)
+	for _, sn := range s.loadHistory(g.Name).Snapshots {
+		for i, hp := range sn.Proxies {
+			if hp.ExternalIP == "" {
+				continue
+			}
+			row := byIP[hp.ExternalIP]
+			if row == nil {
+				row = &ipRow{SnapshotID: sn.ID, publicRow: toPublicRows([]histProxy{hp})[0]}
+				row.Index = i
+				byIP[hp.ExternalIP] = row
+				rows = append(rows, row)
+			}
+			if row.LastAt == 0 {
+				row.LastAt = sn.At
+			}
+			if row.Country == "" {
+				row.Country = hp.Country
+			}
+			row.FirstAt = sn.At
+		}
+	}
+	sort.SliceStable(rows[:inUse], func(a, b int) bool { return rows[a].OutputPort < rows[b].OutputPort })
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"ips": rows, "total": len(rows), "in_use": inUse, "history": len(rows) - inUse, "current_without_ip": noIP,
+	})
 }
 
 // GET /api/groups/{name}/history[?id=<snapshot>]
@@ -255,7 +336,7 @@ func histToEntries(rows []histProxy) []config.ProxyEntry {
 	for i, p := range rows {
 		out[i] = config.ProxyEntry{
 			Host: p.Host, Port: p.Port, User: p.User, Pass: p.Pass, Type: p.Type,
-			Status: "unknown", ExternalIP: p.ExternalIP,
+			Status: "unknown", ExternalIP: p.ExternalIP, Country: p.Country, IPv4Only: p.IPv4Only,
 		}
 	}
 	return out
@@ -335,20 +416,6 @@ func (s *Server) handleAttachHistoryProxy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	g := s.cfg.ProxyGroups[idx]
-	m, mapped := s.groupMapping(g.Name)
-	if !mapped {
-		respondError(w, http.StatusBadRequest, "group has no port range")
-		return
-	}
-	if req.OutputPort < m.PortStart || req.OutputPort > m.PortEnd {
-		respondError(w, http.StatusBadRequest, fmt.Sprintf("port must be within the group's range %d-%d", m.PortStart, m.PortEnd))
-		return
-	}
-	pos := req.OutputPort - m.PortStart
-	if pos > len(g.Proxies) {
-		respondError(w, http.StatusBadRequest, fmt.Sprintf("port %d would leave a gap: the next free port is %d", req.OutputPort, m.PortStart+len(g.Proxies)))
-		return
-	}
 
 	var src *histProxy
 	for _, sn := range s.loadHistory(g.Name).Snapshots {
@@ -367,31 +434,9 @@ func (s *Server) handleAttachHistoryProxy(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	proxies := make([]config.ProxyEntry, len(g.Proxies), len(g.Proxies)+1)
-	copy(proxies, g.Proxies)
-	entry := histToEntries([]histProxy{*src})[0]
-	replaced := ""
-	if pos < len(proxies) {
-		old := proxies[pos]
-		replaced = fmt.Sprintf("%s:%d", old.Host, old.Port)
-		if err := s.pushHistory(g.Name, "swap", s.snapshotProxies(g.Name, []config.ProxyEntry{old}, pos)); err != nil {
-			respondError(w, http.StatusInternalServerError, "could not archive the replaced proxy: "+err.Error())
-			return
-		}
-		proxies[pos] = entry
-	} else {
-		proxies = append(proxies, entry)
-	}
-
-	prev := s.cfg.ProxyGroups
-	groups := make([]config.ProxyGroup, len(prev))
-	copy(groups, prev)
-	g.Proxies = proxies
-	groups[idx] = g
-	s.cfg.ProxyGroups = groups
-	if err := s.applyGroupChange(); err != nil {
-		s.cfg.ProxyGroups = prev
-		respondError(w, http.StatusInternalServerError, err.Error())
+	replaced, status, err := s.placeAtPort(idx, histToEntries([]histProxy{*src})[0], req.OutputPort)
+	if err != nil {
+		respondError(w, status, err.Error())
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{

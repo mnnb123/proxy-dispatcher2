@@ -23,6 +23,10 @@ var publicEndpoints = map[string]bool{
 }
 
 func isPublicEndpoint(method, path string) bool {
+	// Customer API of session groups: authenticated by its own per-port key.
+	if strings.HasPrefix(path, "/api/pub/") {
+		return true
+	}
 	return publicEndpoints[method+" "+path]
 }
 

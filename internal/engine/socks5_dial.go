@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"proxy-dispatcher/internal/config"
+	"proxy-dispatcher/internal/netutil"
 )
 
 // proxyDialTimeout is the max time to wait when connecting to an upstream proxy.
@@ -100,6 +101,9 @@ func dialThroughSOCKS5Proxy(ctx context.Context, proxy config.ProxyEntry, target
 		return nil, err
 	}
 
+	if proxy.IPv4Only {
+		targetAddr = netutil.IPv4Target(ctx, targetAddr)
+	}
 	if err := socks5Connect(conn, targetAddr); err != nil {
 		conn.Close()
 		return nil, err

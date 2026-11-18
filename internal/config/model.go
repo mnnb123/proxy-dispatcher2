@@ -30,7 +30,16 @@ type ProxyEntry struct {
 	ActiveConns int32   `json:"-"`
 	ExternalIP  string  `json:"external_ip,omitempty"`
 	Country     string  `json:"country,omitempty"`
+	// IPv4Only (SOCKS5 upstreams): destination names are resolved to an
+	// IPv4 address here, so the upstream cannot leave through IPv6.
+	IPv4Only bool `json:"ipv4_only,omitempty"`
 }
+
+// IsEmpty reports whether the entry is a placeholder for an output port
+// that currently has no proxy. Proxies map to ports by position, so a
+// session group keeps a placeholder to leave a port in the middle of its
+// range unassigned.
+func (p *ProxyEntry) IsEmpty() bool { return p.Host == "" }
 
 // ProxyGroup is a named bundle of proxies with a rotation mode.
 type ProxyGroup struct {
@@ -41,6 +50,34 @@ type ProxyGroup struct {
 	// KeepHistory marks a "session" group: every replaced list is archived
 	// (with recorded public IPs) so it can be searched and re-attached.
 	KeepHistory bool `json:"keep_history,omitempty"`
+	// SessionAPI lets customers change the IP of a port of this session
+	// group through the key-authenticated /api/pub/port/... endpoints.
+	SessionAPI *SessionAPIConfig `json:"session_api,omitempty"`
+}
+
+// SessionAPIConfig configures the customer API of a session group. The
+// filter fields are the defaults used when a new sock is requested.
+type SessionAPIConfig struct {
+	Enabled        bool   `json:"enabled"`
+	Secret         string `json:"secret,omitempty"`
+	Country        string `json:"country,omitempty"`
+	State          string `json:"state,omitempty"`
+	City           string `json:"city,omitempty"`
+	SockType       string `json:"sock_type,omitempty"`
+	Level          string `json:"level,omitempty"`
+	MinIntervalSec int    `json:"min_interval_sec,omitempty"`
+	// Unique: a "new IP" request never hands out an IP the group already had.
+	Unique bool `json:"unique,omitempty"`
+	// Keys are customer keys valid for a set of ports each.
+	Keys []SessionAPIKey `json:"keys,omitempty"`
+}
+
+// SessionAPIKey is one key shared by several ports of a session group.
+// Ports is a list such as "40000-40004,40010".
+type SessionAPIKey struct {
+	Key   string `json:"key"`
+	Ports string `json:"ports"`
+	Note  string `json:"note,omitempty"`
 }
 
 // PortMapping binds a port range to a group name.
@@ -112,6 +149,14 @@ type AutoBanConfig struct {
 	Enabled        bool `json:"enabled"`
 	MaxAttempts    int  `json:"max_attempts"`
 	BanDurationSec int  `json:"ban_duration_sec"`
+}
+
+// ShopSocks5Config is the shopsocks5.com account used to take socks for
+// session groups. BaseURL is only for tests; empty means the real API.
+type ShopSocks5Config struct {
+	UserName string `json:"user_name,omitempty"`
+	APIToken string `json:"api_token,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
 }
 
 // OutputAccount is a user/password a client may present on an output port
@@ -214,6 +259,8 @@ type AppConfig struct {
 	APITokens    []APIToken    `json:"api_tokens"`
 	SyncConfig   SyncConfig    `json:"sync_config"`
 	SystemConfig SystemConfig  `json:"system_config"`
+
+	ShopSocks5 ShopSocks5Config `json:"shopsocks5,omitempty"`
 }
 
 // UserAccount is a web-panel user with RBAC + optional TOTP.

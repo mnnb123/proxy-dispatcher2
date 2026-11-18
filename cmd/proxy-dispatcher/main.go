@@ -418,7 +418,9 @@ func startWebPanel(cfg *config.AppConfig, apiServer *api.Server, userMgr *auth.U
 		Addr:         fmt.Sprintf(":%d", cfg.WebPanelPort),
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		// Long enough for on-demand probes of a large group and for
+		// provider calls; shorter values cut those responses off.
+		WriteTimeout: 180 * time.Second,
 	}
 	go func() {
 		logger.Info("web panel listening", "port", cfg.WebPanelPort)

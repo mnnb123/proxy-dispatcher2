@@ -2,6 +2,7 @@ package health
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"proxy-dispatcher/internal/config"
+	"proxy-dispatcher/internal/netutil"
 )
 
 func probeSOCKS5(proxy *config.ProxyEntry, testURL string, timeout time.Duration) CheckResult {
@@ -90,10 +92,20 @@ func probeSOCKS5(proxy *config.ProxyEntry, testURL string, timeout time.Duration
 		return res
 	}
 
-	// CONNECT command.
+	// CONNECT command. IPv4-only proxies get the test host as an IPv4
+	// address, like client traffic through them, so the reported public
+	// IP is the IPv4 one.
 	portNum, _ := strconv.Atoi(port)
 	req := []byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}
 	req = append(req, []byte(host)...)
+	if proxy.IPv4Only {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		h4, _, _ := net.SplitHostPort(netutil.IPv4Target(ctx, net.JoinHostPort(host, port)))
+		cancel()
+		if ip4 := net.ParseIP(h4).To4(); ip4 != nil {
+			req = append([]byte{0x05, 0x01, 0x00, 0x01}, ip4...)
+		}
+	}
 	req = append(req, byte(portNum>>8), byte(portNum&0xff))
 	if _, err := conn.Write(req); err != nil {
 		res.Error = "write connect: " + err.Error()

@@ -101,7 +101,7 @@ func (hc *HealthChecker) runAllChecks() {
 	var wg sync.WaitGroup
 	for _, g := range groups {
 		for _, p := range g.Proxies {
-			if p == nil {
+			if p == nil || p.IsEmpty() {
 				continue
 			}
 			hc.semaphore <- struct{}{}
@@ -242,7 +242,7 @@ func (hc *HealthChecker) CheckProxies(proxies []*config.ProxyEntry) []CheckResul
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, p := range proxies {
-		if p == nil {
+		if p == nil || p.IsEmpty() {
 			continue
 		}
 		hc.semaphore <- struct{}{}

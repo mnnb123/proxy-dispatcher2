@@ -1235,7 +1235,213 @@ function fmtTime(unix) {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
+// ── ShopSocks5 (lấy sock cho nhóm phiên) ───────────────────
+async function ssLoadAccount() {
+  const box = document.getElementById('ssAccount');
+  const c = await apiCall('GET', '/api/config/shopsocks5');
+  if (!c.ok) { box.textContent = ''; return; }
+  document.getElementById('ssUser').value = c.data.user_name || '';
+  if (!c.data.token_set) { box.textContent = 'Chưa nhập tài khoản ShopSocks5. Mở mục "Tài khoản ShopSocks5" bên dưới để nhập.'; return; }
+  box.textContent = 'Đang đọc tài khoản…';
+  const a = await apiCall('GET', '/api/config/shopsocks5/account');
+  if (!a.ok) { box.textContent = 'Không đọc được tài khoản: ' + (a.data.error || 'lỗi'); return; }
+  box.textContent = 'Tài khoản ' + a.data.user_name + ' · gói ' + a.data.plan_name + ' ' + a.data.plan_limit + '/ngày · còn ' +
+    a.data.limit_today + ' lượt hôm nay · hết hạn ' + a.data.expired;
+}
+
+async function ssFetch(mode) {
+  const name = sessName();
+  if (!name) { setMsg('ssMsg', 'Chưa có nhóm phiên', true); return; }
+  const body = {
+    mode,
+    qty: parseInt(document.getElementById('ssQty').value, 10) || 1,
+    country: document.getElementById('ssCountry').value.trim(),
+    state: document.getElementById('ssState').value.trim(),
+    city: document.getElementById('ssCity').value.trim(),
+    sock_type: document.getElementById('ssType').value,
+    level: document.getElementById('ssLevel').value,
+    unique: document.getElementById('ssUnique').checked,
+  };
+  if (mode === 'port') {
+    body.ip_real = document.getElementById('ssIpReal').value.trim();
+    body.output_port = parseInt(document.getElementById('ssPort').value, 10) || 0;
+    if (!body.ip_real) { setMsg('ssMsg', 'Nhập IP thoát cần gọi lại', true); return; }
+    if (!body.output_port) { setMsg('ssMsg', 'Nhập port muốn gắn', true); return; }
+    // Only the IP matters when recalling: other filters could exclude it.
+    body.country = body.state = body.city = body.sock_type = body.level = '';
+    if (!confirm('Xin ShopSocks5 cấp lại IP ' + body.ip_real + ' và gắn vào port ' + body.output_port + '? Tốn 1 lượt nếu thành công.')) return;
+  } else {
+    const count = (sessCur && sessCur.proxies || []).length;
+    let q = 'Lấy ' + body.qty + ' sock từ ShopSocks5 (trừ ' + body.qty + ' lượt)';
+    q += mode === 'replace' ? ' và THAY ' + count + ' proxy hiện tại của nhóm ' + name + '? List cũ được lưu vào lịch sử.' : ' và thêm vào port trống của nhóm ' + name + '?';
+    if (!confirm(q)) return;
+  }
+  const btns = ['ssAppendBtn', 'ssReplaceBtn', 'ssRecallBtn'].map(id => document.getElementById(id));
+  btns.forEach(b => { b.disabled = true; });
+  setMsg('ssMsg', 'Đang lấy sock…', false);
+  const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(name) + '/shopsocks5', body);
+  btns.forEach(b => { b.disabled = false; });
+  if (!r.ok) { setMsg('ssMsg', r.data.error || 'Thất bại', true); await loadSessionGroup(); loadSessionHistory(); return; }
+  let msg = 'Đã lấy ' + r.data.count + ' sock';
+  if (r.data.duplicates) msg += ', bỏ ' + r.data.duplicates + ' sock trùng IP cũ (tổng trừ ' + r.data.spent + ' lượt)';
+  if (r.data.count < r.data.requested) msg += r.data.duplicates ? ' — còn thiếu ' + (r.data.requested - r.data.count) + ' so với yêu cầu' : ' (yêu cầu ' + r.data.requested + ', kho chỉ còn chừng đó)';
+  setMsg('ssMsg', msg, false);
+  let html = '<table class="data-table"><thead><tr><th>Port</th><th>IP public</th><th>Vị trí</th><th>Nhà mạng</th><th>Loại</th><th>Rủi ro</th></tr></thead><tbody>';
+  (r.data.socks || []).forEach(s => {
+    html += '<tr><td>' + s.output_port + '</td><td>' + escH(s.external_ip || '') + '</td><td>' +
+      escH([s.city, s.state, s.country].filter(Boolean).join(', ')) + '</td><td>' + escH(s.isp || '') + '</td><td>' +
+      escH(s.sock_type || '') + '</td><td>' + escH(s.level || '') + '</td></tr>';
+  });
+  document.getElementById('ssResult').innerHTML = html + '</tbody></table>';
+  await loadSessionTab();
+  ssLoadAccount();
+  // New socks are probed in the background; show the result when it lands.
+  setTimeout(loadSessionGroup, 6000);
+  setTimeout(loadSessionGroup, 15000);
+}
+
+document.getElementById('ssAppendBtn').addEventListener('click', () => ssFetch('append'));
+document.getElementById('ssReplaceBtn').addEventListener('click', () => ssFetch('replace'));
+document.getElementById('ssRecallBtn').addEventListener('click', () => ssFetch('port'));
+document.getElementById('ssSaveBtn').addEventListener('click', async () => {
+  const r = await apiCall('POST', '/api/config/shopsocks5', {
+    user_name: document.getElementById('ssUser').value.trim(),
+    api_token: document.getElementById('ssToken').value.trim(),
+  });
+  if (!r.ok) { setMsg('ssMsg', r.data.error || 'Thất bại', true); return; }
+  document.getElementById('ssToken').value = '';
+  setMsg('ssMsg', 'Đã lưu tài khoản ShopSocks5', false);
+  ssLoadAccount();
+});
+
+// ── API cho khách (đổi IP theo port) ───────────────────────
+let saData = null;
+
+function saLink(port, verb) {
+  const key = saData && saData.port_keys && saData.port_keys[port];
+  if (!key) return '';
+  return window.location.origin + '/api/pub/port/' + port + (verb ? '/' + verb : '') + '?key=' + key + (verb === 'recall' ? '&ip=IP_CAN_GOI_LAI' : '');
+}
+
+function saRenderExample() {
+  const port = parseInt(document.getElementById('saPort').value, 10);
+  const ex = document.getElementById('saExample');
+  if (!saLink(port, 'new')) { ex.textContent = 'Port không thuộc dải của nhóm.'; return; }
+  ex.textContent = 'Đổi IP mới:   ' + saLink(port, 'new') + '\n' +
+    '   (thêm &country=US&state=California&city=... nếu khách được chọn vị trí)\n' +
+    'Gọi lại IP cũ: ' + saLink(port, 'recall') + '\n' +
+    'Xem IP đang dùng: ' + saLink(port, '');
+}
+
+async function saLoad() {
+  const name = sessName();
+  saData = null;
+  document.getElementById('saLinks').style.display = 'none';
+  if (!name) return;
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/session-api');
+  if (!r.ok) return;
+  saData = r.data;
+  document.getElementById('saEnabled').checked = !!saData.enabled;
+  document.getElementById('saUnique').checked = !!saData.unique;
+  document.getElementById('saCountry').value = saData.country || '';
+  document.getElementById('saState').value = saData.state || '';
+  document.getElementById('saCity').value = saData.city || '';
+  if (saData.key) {
+    document.getElementById('saType').value = saData.sock_type || '';
+    document.getElementById('saLevel').value = saData.level || '';
+    document.getElementById('saInterval').value = saData.min_interval_sec || 0;
+  }
+  if (saData.enabled && saData.port_keys) {
+    document.getElementById('saLinks').style.display = '';
+    const p = document.getElementById('saPort');
+    if (!saData.port_keys[p.value]) p.value = saData.port_start;
+    saRenderExample();
+    saRenderKeys();
+  }
+}
+
+function saRenderKeys() {
+  const box = document.getElementById('saKeys');
+  const keys = (saData && saData.keys) || [];
+  if (!keys.length) { box.innerHTML = '<p class="text-muted text-sm">Chưa có key dùng chung.</p>'; return; }
+  let html = '<table class="data-table"><thead><tr><th>Key</th><th>Port</th><th>Ghi chú</th><th></th></tr></thead><tbody>';
+  keys.forEach((k, i) => {
+    html += '<tr><td>' + escH(k.key) + '</td><td>' + escH(k.ports) + '</td><td>' + escH(k.note || '') + '</td>' +
+      '<td><button class="btn btn-xs" data-sak-copy="' + i + '">Copy link mẫu</button> ' +
+      '<button class="btn btn-xs btn-danger" data-sak-del="' + i + '">X</button></td></tr>';
+  });
+  box.innerHTML = html + '</tbody></table>';
+  box.querySelectorAll('[data-sak-copy]').forEach(b => b.addEventListener('click', () => {
+    const k = keys[+b.dataset.sakCopy];
+    const base = window.location.origin + '/api/pub/port/PORT';
+    copyToClipboard('Key: ' + k.key + ' | Port: ' + k.ports + '\n' +
+      'Doi IP moi:    ' + base + '/new?key=' + k.key + '\n' +
+      'Goi lai IP cu: ' + base + '/recall?key=' + k.key + '&ip=IP_CAN_GOI_LAI\n' +
+      'Xem IP:        ' + base + '?key=' + k.key + '\n' +
+      '(thay PORT bang so port can doi)');
+    setMsg('saMsg', 'Đã copy link mẫu của key', false);
+  }));
+  box.querySelectorAll('[data-sak-del]').forEach(b => b.addEventListener('click', async () => {
+    const k = keys[+b.dataset.sakDel];
+    if (!confirm('Xóa key của "' + (k.note || k.ports) + '"? Khách dùng key này sẽ không đổi IP được nữa.')) return;
+    const r = await apiCall('DELETE', '/api/groups/' + encodeURIComponent(sessName()) + '/session-api/keys', { key: k.key });
+    if (!r.ok) { setMsg('saMsg', r.data.error || 'Thất bại', true); return; }
+    saLoad();
+  }));
+}
+
+document.getElementById('saKeyAdd').addEventListener('click', async () => {
+  const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(sessName()) + '/session-api/keys', {
+    ports: document.getElementById('saKeyPorts').value.trim(),
+    note: document.getElementById('saKeyNote').value.trim(),
+  });
+  if (!r.ok) { setMsg('saMsg', r.data.error || 'Thất bại', true); return; }
+  document.getElementById('saKeyPorts').value = '';
+  document.getElementById('saKeyNote').value = '';
+  setMsg('saMsg', 'Đã tạo key cho port ' + r.data.key.ports, false);
+  saLoad();
+});
+
+async function saSave(regenerate) {
+  const name = sessName();
+  if (!name) { setMsg('saMsg', 'Chưa có nhóm phiên', true); return; }
+  if (regenerate && !confirm('Đổi key của nhóm ' + name + '? Mọi link đã gửi cho khách sẽ hết hiệu lực.')) return;
+  const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(name) + '/session-api', {
+    enabled: document.getElementById('saEnabled').checked,
+    unique: document.getElementById('saUnique').checked,
+    country: document.getElementById('saCountry').value.trim(),
+    state: document.getElementById('saState').value.trim(),
+    city: document.getElementById('saCity').value.trim(),
+    sock_type: document.getElementById('saType').value,
+    level: document.getElementById('saLevel').value,
+    min_interval_sec: parseInt(document.getElementById('saInterval').value, 10) || 0,
+    regenerate: !!regenerate,
+  });
+  if (!r.ok) { setMsg('saMsg', r.data.error || 'Thất bại', true); return; }
+  setMsg('saMsg', regenerate ? 'Đã đổi key' : 'Đã lưu', false);
+  saLoad();
+}
+
+document.getElementById('saSaveBtn').addEventListener('click', () => saSave(false));
+document.getElementById('saRegenBtn').addEventListener('click', () => saSave(true));
+document.getElementById('saPort').addEventListener('input', saRenderExample);
+document.getElementById('saCopyNew').addEventListener('click', () => {
+  const l = saLink(parseInt(document.getElementById('saPort').value, 10), 'new');
+  if (l) { copyToClipboard(l); setMsg('saMsg', 'Đã copy link đổi IP', false); }
+});
+document.getElementById('saCopyRecall').addEventListener('click', () => {
+  const l = saLink(parseInt(document.getElementById('saPort').value, 10), 'recall');
+  if (l) { copyToClipboard(l); setMsg('saMsg', 'Đã copy link gọi lại IP', false); }
+});
+document.getElementById('saCopyAll').addEventListener('click', () => {
+  if (!saData || !saData.port_keys) return;
+  const lines = Object.keys(saData.port_keys).map(Number).sort((a, b) => a - b).map(p => p + ' | ' + saLink(p, 'new'));
+  copyToClipboard(lines.join('\n'));
+  setMsg('saMsg', 'Đã copy ' + lines.length + ' link (port | link đổi IP)', false);
+});
+
 async function loadSessionTab() {
+  ssLoadAccount();
   const r = await apiCall('GET', '/api/groups');
   if (!r.ok) return;
   const all = r.data.groups || [];
@@ -1260,6 +1466,7 @@ async function loadSessionTab() {
 async function loadSessionGroup() {
   const name = sessName();
   if (!name) return;
+  saLoad();
   document.getElementById('sessSnapshot').innerHTML = '';
   const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/proxies');
   if (!r.ok) { setMsg('sessMsg', r.data.error || 'Không tải được nhóm', true); return; }
@@ -1288,6 +1495,7 @@ async function loadSessionGroup() {
     box.innerHTML = html;
   }
   await loadSessionHistory();
+  await loadSessionIps();
 }
 
 async function loadSessionHistory() {
@@ -1297,7 +1505,7 @@ async function loadSessionHistory() {
   if (!r.ok) { box.innerHTML = '<p class="text-muted">' + escH(r.data.error || 'Không tải được lịch sử') + '</p>'; return; }
   const snaps = r.data.snapshots || [];
   if (!snaps.length) { box.innerHTML = '<p class="text-muted">Chưa có list nào trong lịch sử. List cũ sẽ xuất hiện ở đây sau lần thay list đầu tiên.</p>'; return; }
-  const reasons = { replace: 'Thay list', restore: 'Trước khi khôi phục', swap: 'Bị thay ở 1 port' };
+  const reasons = { replace: 'Thay list', restore: 'Trước khi khôi phục', swap: 'Bị thay ở 1 port', fetched: 'Sock đã lấy nhưng chưa gắn' };
   let html = '<div style="max-height:300px;overflow:auto"><table class="mini-table"><tr><th>Thời gian</th><th>Lý do</th><th>Số proxy</th><th>Có IP public</th><th></th></tr>';
   snaps.forEach((sn, i) => {
     html += '<tr><td>' + fmtTime(sn.at) + '</td><td>' + (reasons[sn.reason] || escH(sn.reason)) + '</td><td>' + sn.count + '</td><td>' + sn.with_ip + '</td>';
@@ -1315,6 +1523,70 @@ async function loadSessionHistory() {
     });
   });
 }
+
+// ── Thống kê IP public đã lấy ──────────────────────────────
+let sessIps = [];
+
+function sessIpsShown() {
+  const q = document.getElementById('sessIpsFilter').value.trim().toLowerCase();
+  if (!q) return sessIps;
+  return sessIps.filter(p => (p.external_ip + ' ' + (p.country || '') + ' ' + (p.output_port || '') + ' ' + p.host).toLowerCase().includes(q));
+}
+
+function renderSessionIps() {
+  const box = document.getElementById('sessIps');
+  if (!sessIps.length) { box.innerHTML = '<p class="text-muted">Chưa ghi nhận IP public nào.</p>'; return; }
+  const rows = sessIpsShown();
+  const max = 500;
+  let html = '<div style="max-height:380px;overflow:auto"><table class="mini-table"><tr><th>#</th><th>IP public</th><th>Nước</th><th>Trạng thái</th><th>Port</th><th>Proxy gốc</th><th>Lần đầu lưu</th><th>Gắn lại vào port</th></tr>';
+  rows.slice(0, max).forEach((p, i) => {
+    html += '<tr><td>' + (i + 1) + '</td><td>' + escH(p.external_ip) + '</td><td>' + escH(p.country || '—') + '</td>';
+    html += '<td>' + (p.in_use ? '<b>Đang dùng</b>' : 'Đã thay lúc ' + fmtTime(p.last_at)) + '</td>';
+    html += '<td>' + (p.output_port || '—') + '</td><td>' + escH(p.host) + ':' + p.port + '</td>';
+    html += '<td>' + (p.first_at ? fmtTime(p.first_at) : '—') + '</td>';
+    html += '<td style="white-space:nowrap">' + (p.in_use ? '<span class="text-muted">—</span>' : attachCell(p.snapshot_id, p.index, p.output_port)) + '</td></tr>';
+  });
+  html += '</table></div>';
+  if (rows.length > max) html += '<p class="text-muted text-sm">Hiện ' + max + '/' + rows.length + ' dòng. Dùng ô lọc, hoặc Copy / Tải CSV để lấy đủ.</p>';
+  box.innerHTML = html;
+  wireAttach(box);
+}
+
+async function loadSessionIps() {
+  const name = sessName();
+  const box = document.getElementById('sessIps');
+  sessIps = [];
+  document.getElementById('sessIpsCount').textContent = '';
+  if (!name) { box.innerHTML = ''; return; }
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/ips');
+  if (!r.ok) { box.innerHTML = '<p class="text-muted">' + escH(r.data.error || 'Không tải được thống kê') + '</p>'; return; }
+  sessIps = r.data.ips || [];
+  let txt = '— ' + r.data.total + ' IP khác nhau: ' + r.data.in_use + ' đang dùng, ' + r.data.history + ' trong lịch sử';
+  if (r.data.current_without_ip) txt += ' (' + r.data.current_without_ip + ' proxy đang dùng chưa có IP public)';
+  document.getElementById('sessIpsCount').textContent = txt;
+  renderSessionIps();
+}
+
+document.getElementById('sessIpsFilter').addEventListener('input', renderSessionIps);
+document.getElementById('sessIpsReload').addEventListener('click', loadSessionIps);
+document.getElementById('sessIpsCopy').addEventListener('click', () => {
+  const rows = sessIpsShown();
+  if (!rows.length) return;
+  copyToClipboard(rows.map(p => p.external_ip).join('\n'));
+  setMsg('sessMsg', 'Đã copy ' + rows.length + ' IP', false);
+});
+document.getElementById('sessIpsCsv').addEventListener('click', () => {
+  const rows = sessIpsShown();
+  if (!rows.length) return;
+  const iso = t => t ? new Date(t * 1000).toISOString() : '';
+  const lines = ['ip_public,nuoc,trang_thai,port,proxy_goc,lan_dau_luu,lan_cuoi_luu'].concat(rows.map(p =>
+    [p.external_ip, p.country || '', p.in_use ? 'dang_dung' : 'lich_su', p.output_port || '', p.host + ':' + p.port, iso(p.first_at), iso(p.last_at)].join(',')));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+  a.download = 'ip-public-' + sessName() + '.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
 
 // defaultAttachPort: the port the proxy used to hold if it is still inside
 // the range and not past the end of the current list, else the next free one.

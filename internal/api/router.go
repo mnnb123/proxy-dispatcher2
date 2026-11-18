@@ -2,6 +2,7 @@
 package api
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -213,9 +214,22 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("GET /api/groups/{name}/proxies", s.handleGetGroupProxies)
 	s.mux.HandleFunc("GET /api/groups/{name}/history", s.handleGetGroupHistory)
 	s.mux.HandleFunc("GET /api/groups/{name}/search", s.handleSearchGroupIP)
+	s.mux.HandleFunc("GET /api/groups/{name}/ips", s.handleGetGroupIPs)
 	s.mux.HandleFunc("POST /api/groups/{name}/history/restore", s.handleRestoreGroupHistory)
 	s.mux.HandleFunc("POST /api/groups/{name}/attach", s.handleAttachHistoryProxy)
 	s.mux.HandleFunc("POST /api/groups/{name}/check-ip", s.handleCheckGroupIP)
+	s.mux.HandleFunc("POST /api/groups/{name}/shopsocks5", s.handleShopSocks5Fetch)
+	s.mux.HandleFunc("GET /api/groups/{name}/session-api", s.handleGetSessionAPI)
+	s.mux.HandleFunc("POST /api/groups/{name}/session-api", s.handlePostSessionAPI)
+	s.mux.HandleFunc("POST /api/groups/{name}/session-api/keys", s.handlePostSessionAPIKey)
+	s.mux.HandleFunc("DELETE /api/groups/{name}/session-api/keys", s.handleDeleteSessionAPIKey)
+	// Customer API: key in the query string, no panel login.
+	s.mux.HandleFunc("/api/pub/port/{port}", s.handlePubPortStatus)
+	s.mux.HandleFunc("/api/pub/port/{port}/new", s.handlePubPortNew)
+	s.mux.HandleFunc("/api/pub/port/{port}/recall", s.handlePubPortRecall)
+	s.mux.HandleFunc("GET /api/config/shopsocks5", s.handleGetShopSocks5)
+	s.mux.HandleFunc("POST /api/config/shopsocks5", s.handlePostShopSocks5)
+	s.mux.HandleFunc("GET /api/config/shopsocks5/account", s.handleShopSocks5Account)
 	s.mux.HandleFunc("PUT /api/groups/{name}", s.handlePutGroup)
 	s.mux.HandleFunc("DELETE /api/groups/{name}", s.handleDeleteGroup)
 	s.mux.HandleFunc("GET /api/port-mappings", s.handleGetPortMappings)
@@ -299,7 +313,10 @@ func cfgLockFor(r *http.Request) cfgLockMode {
 		p == "/api/system/dns/test",
 		p == "/api/health/check-now",
 		strings.HasPrefix(p, "/api/import/fetch-now/"),
-		strings.HasPrefix(p, "/api/groups/") && strings.HasSuffix(p, "/check-ip"):
+		strings.HasPrefix(p, "/api/groups/") && strings.HasSuffix(p, "/check-ip"),
+		strings.HasPrefix(p, "/api/groups/") && strings.HasSuffix(p, "/shopsocks5"),
+		p == "/api/config/shopsocks5/account",
+		strings.HasPrefix(p, "/api/pub/"):
 		return cfgLockNone
 	}
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
@@ -311,6 +328,13 @@ func cfgLockFor(r *http.Request) cfgLockMode {
 // ServeHTTP satisfies http.Handler. It serialises access to the shared
 // config: concurrent readers, exclusive writers.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Body != nil && !strings.HasPrefix(r.URL.Path, "/ws/") {
+		// Handlers that ignore their request body (e.g. check-ip posted
+		// with "{}") would leave it unread; closing the connection with
+		// unread bytes makes the kernel send a reset that can destroy the
+		// response before the client has read it.
+		defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 64<<10)) }()
+	}
 	switch cfgLockFor(r) {
 	case cfgLockRead:
 		s.cfgMu.RLock()

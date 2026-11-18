@@ -16,3 +16,6 @@ vendor/
 
 # Claude
 .claude/
+
+# Local notes with real credentials
+shopsocks5-api.md

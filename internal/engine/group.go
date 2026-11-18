@@ -27,6 +27,18 @@ type GroupManager struct {
 	mu           sync.RWMutex
 }
 
+// assigned drops placeholder entries (ports with no proxy): they keep their
+// position for the port mapping but must never be handed out by a rotator.
+func assigned(ptrs []*config.ProxyEntry) []*config.ProxyEntry {
+	out := make([]*config.ProxyEntry, 0, len(ptrs))
+	for _, p := range ptrs {
+		if p != nil && !p.IsEmpty() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // NewGroupManager constructs a GroupManager from config.
 func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, logger *slog.Logger) (*GroupManager, error) {
 	gm := &GroupManager{
@@ -43,7 +55,7 @@ func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, 
 			ptrs[j] = &g.Proxies[j]
 		}
 		ttl := time.Duration(g.StickyTTLSec) * time.Second
-		rot, err := NewRotator(g.RotationMode, ptrs, RotatorOpts{StickyTTL: ttl, Logger: logger})
+		rot, err := NewRotator(g.RotationMode, assigned(ptrs), RotatorOpts{StickyTTL: ttl, Logger: logger})
 		if err != nil {
 			return nil, fmt.Errorf("group %s: %w", g.Name, err)
 		}
@@ -108,6 +120,11 @@ func (gm *GroupManager) GetProxyForPort(port int) (*config.ProxyEntry, bool) {
 func (gm *GroupManager) GetNextProxy(port int, clientIP string) (*config.ProxyEntry, error) {
 	// Always try direct 1:1 mapping first.
 	if p, ok := gm.GetProxyForPort(port); ok {
+		if p.IsEmpty() {
+			// The port sits in an assigned position that has no proxy:
+			// never fall back to another port's proxy.
+			return nil, fmt.Errorf("no proxy assigned to port %d", port)
+		}
 		return p, nil
 	}
 	g, err := gm.GetGroupForPort(port)
@@ -121,6 +138,9 @@ func (gm *GroupManager) GetNextProxy(port int, clientIP string) (*config.ProxyEn
 // Uses direct 1:1 lookup. Falls back to rotator only if no mapping.
 func (g *ManagedGroup) NextProxy(port int, clientIP string, gm *GroupManager) (*config.ProxyEntry, error) {
 	if p, ok := gm.GetProxyForPort(port); ok {
+		if p.IsEmpty() {
+			return nil, fmt.Errorf("no proxy assigned to port %d", port)
+		}
 		return p, nil
 	}
 	return g.Rotator.Next(clientIP)
@@ -192,7 +212,7 @@ func (gm *GroupManager) UpdateGroupProxies(groupName string, proxies []*config.P
 		}
 	}
 	gm.mu.Unlock()
-	g.Rotator.UpdateProxies(proxies)
+	g.Rotator.UpdateProxies(assigned(proxies))
 	return nil
 }
 

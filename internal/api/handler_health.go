@@ -68,6 +68,9 @@ func (s *Server) handleHealthStatus(w http.ResponseWriter, r *http.Request) {
 			case "dead":
 				gv.Dead++
 			}
+			if p.IsEmpty() {
+				continue
+			}
 			gv.Proxies = append(gv.Proxies, proxyView{
 				Host: p.Host, Port: p.Port, Status: p.Status,
 				Latency: p.LatencyMs, AvgLatency: p.AvgLatency,

@@ -194,6 +194,9 @@ func (s *Server) handleGetGroupProxies(w http.ResponseWriter, r *http.Request) {
 		m, mapped := s.groupMapping(name)
 		rows := make([]row, 0, len(g.Proxies))
 		for j, p := range g.Proxies {
+			if p.IsEmpty() {
+				continue // unassigned port inside the range
+			}
 			rw := row{Index: j, Host: p.Host, Port: p.Port, User: p.User, Type: p.Type, Status: p.Status, LatencyMs: p.LatencyMs, ExternalIP: p.ExternalIP}
 			if mapped && m.PortStart+j <= m.PortEnd {
 				rw.OutputPort = m.PortStart + j
