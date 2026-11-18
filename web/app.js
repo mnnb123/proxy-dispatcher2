@@ -1236,7 +1236,28 @@ function fmtTime(unix) {
 }
 
 // ── ShopSocks5 (lấy sock cho nhóm phiên) ───────────────────
+async function ssLoadExclude() {
+  const r = await apiCall('GET', '/api/config/shopsocks5/exclude');
+  if (!r.ok) return;
+  const info = document.getElementById('ssExclInfo');
+  document.getElementById('ssExclUrl').value = r.data.url || '';
+  if (!r.data.url) info.textContent = '— chưa dùng';
+  else if (r.data.error) info.textContent = '— LỖI: ' + r.data.error;
+  else info.textContent = '— đang loại trừ ' + r.data.count + ' IP';
+}
+
+document.getElementById('ssExclSave').addEventListener('click', async () => {
+  const btn = document.getElementById('ssExclSave');
+  btn.disabled = true;
+  const r = await apiCall('POST', '/api/config/shopsocks5/exclude', { url: document.getElementById('ssExclUrl').value.trim() });
+  btn.disabled = false;
+  if (!r.ok) { setMsg('ssMsg', r.data.error || 'Thất bại', true); return; }
+  setMsg('ssMsg', r.data.url ? 'Đã lưu: danh sách có ' + r.data.count + ' IP' : 'Đã tắt danh sách loại trừ', false);
+  ssLoadExclude();
+});
+
 async function ssLoadAccount() {
+  ssLoadExclude();
   const box = document.getElementById('ssAccount');
   const c = await apiCall('GET', '/api/config/shopsocks5');
   if (!c.ok) { box.textContent = ''; return; }
@@ -1283,7 +1304,7 @@ async function ssFetch(mode) {
   btns.forEach(b => { b.disabled = false; });
   if (!r.ok) { setMsg('ssMsg', r.data.error || 'Thất bại', true); await loadSessionGroup(); loadSessionHistory(); return; }
   let msg = 'Đã lấy ' + r.data.count + ' sock';
-  if (r.data.duplicates) msg += ', bỏ ' + r.data.duplicates + ' sock trùng IP cũ (tổng trừ ' + r.data.spent + ' lượt)';
+  if (r.data.duplicates) msg += ', bỏ ' + r.data.duplicates + ' sock trùng IP cũ / IP loại trừ (tổng trừ ' + r.data.spent + ' lượt)';
   if (r.data.count < r.data.requested) msg += r.data.duplicates ? ' — còn thiếu ' + (r.data.requested - r.data.count) + ' so với yêu cầu' : ' (yêu cầu ' + r.data.requested + ', kho chỉ còn chừng đó)';
   setMsg('ssMsg', msg, false);
   let html = '<table class="data-table"><thead><tr><th>Port</th><th>IP public</th><th>Vị trí</th><th>Nhà mạng</th><th>Loại</th><th>Rủi ro</th></tr></thead><tbody>';

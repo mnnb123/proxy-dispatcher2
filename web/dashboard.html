@@ -299,6 +299,14 @@
             <div class="col" style="display:flex;align-items:flex-end"><button class="btn btn-primary" id="ssSaveBtn">Lưu tài khoản</button></div>
           </div>
         </details>
+        <details style="margin-top:10px" id="ssExclBox">
+          <summary>Danh sách IP loại trừ <span id="ssExclInfo" class="text-muted text-sm"></span></summary>
+          <p class="text-muted text-sm" style="margin-top:8px">Link trả về các IP không được lấy lại (ví dụ IP đã lead). Sock có IP nằm trong danh sách bị bỏ và lấy bù, áp dụng cho mọi nhóm và cả API cho khách; sock bị bỏ vẫn trừ lượt. Bỏ trống rồi Lưu để tắt.</p>
+          <div class="row">
+            <div class="col"><label for="ssExclUrl">Link danh sách (JSON có trường "ips", hoặc mỗi dòng một IP)</label><input type="text" id="ssExclUrl" placeholder="https://.../ip_lead.php?json=1"></div>
+            <div class="col" style="display:flex;align-items:flex-end;max-width:160px"><button class="btn btn-primary" id="ssExclSave">Lưu &amp; kiểm tra</button></div>
+          </div>
+        </details>
       </section>
 
       <section class="card" style="grid-column:1/3">

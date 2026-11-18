@@ -157,6 +157,9 @@ type ShopSocks5Config struct {
 	UserName string `json:"user_name,omitempty"`
 	APIToken string `json:"api_token,omitempty"`
 	BaseURL  string `json:"base_url,omitempty"`
+	// ExcludeURL returns IPs that must never be handed out (see
+	// internal/api/handler_exclude.go).
+	ExcludeURL string `json:"exclude_url,omitempty"`
 }
 
 // OutputAccount is a user/password a client may present on an output port

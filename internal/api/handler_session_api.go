@@ -449,14 +449,14 @@ func (s *Server) handlePubPortNew(w http.ResponseWriter, r *http.Request) {
 		pubFail(w, http.StatusServiceUnavailable, "provider is not configured")
 		return
 	}
-	var known map[string]bool
-	if t.api.Unique {
-		s.cfgMu.RLock()
-		known = s.knownIPs(t.group)
-		s.cfgMu.RUnlock()
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
 	defer cancel()
+	known, err := s.ssKnown(ctx, t.group, t.api.Unique)
+	if err != nil {
+		s.logger.Warn("session api: exclude list unavailable", "port", port, "error", err)
+		pubFail(w, http.StatusBadGateway, "the exclude list is unavailable, try again later")
+		return
+	}
 	socks, _, dups, err := fetchUniqueSocks(ctx, cl, 1, map[string]string{
 		"country": q.Country, "state": q.State, "city": q.City, "sock_type": q.SockType, "level": q.Level,
 	}, known)

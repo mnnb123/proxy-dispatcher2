@@ -346,12 +346,8 @@ func (s *Server) handleShopSocks5Fetch(w http.ResponseWriter, r *http.Request) {
 	ssFetchMu.Lock()
 	defer ssFetchMu.Unlock()
 
-	var known map[string]bool
 	s.cfgMu.RLock()
 	err = s.ssRoom(name, &q)
-	if err == nil && q.Unique && q.IPReal == "" {
-		known = s.knownIPs(name)
-	}
 	s.cfgMu.RUnlock()
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
@@ -360,6 +356,14 @@ func (s *Server) handleShopSocks5Fetch(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
 	defer cancel()
+	// Asking for one specific IP back skips both duplicate filters.
+	var known map[string]bool
+	if q.IPReal == "" {
+		if known, err = s.ssKnown(ctx, name, q.Unique); err != nil {
+			respondError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	}
 	socks, spent, dups, err := fetchUniqueSocks(ctx, cl, q.Qty, map[string]string{
 		"country": q.Country, "state": q.State, "city": q.City,
 		"sock_type": q.SockType, "level": q.Level, "ip_real": q.IPReal,
@@ -371,7 +375,7 @@ func (s *Server) handleShopSocks5Fetch(w http.ResponseWriter, r *http.Request) {
 	entries := socksToEntries(socks)
 	if len(entries) == 0 {
 		if dups > 0 {
-			respondError(w, http.StatusBadGateway, fmt.Sprintf("ShopSocks5 chi tra ve IP nhom nay da tung co (%d sock trung, da tru %d luot). Thu doi bo loc vi tri.", dups, spent))
+			respondError(w, http.StatusBadGateway, fmt.Sprintf("ShopSocks5 chi tra ve IP trung (nhom da tung co hoac nam trong danh sach loai tru): %d sock, da tru %d luot. Thu doi bo loc vi tri.", dups, spent))
 			return
 		}
 		respondError(w, http.StatusBadGateway, "ShopSocks5 khong tra ve sock nao phu hop bo loc")
