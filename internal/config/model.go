@@ -58,13 +58,17 @@ type ProxyGroup struct {
 	AutoKeep *AutoKeepConfig `json:"auto_keep,omitempty"`
 }
 
-// AutoKeepConfig: the first Target ports of the group are probed every
+// AutoKeepConfig: the first Target ports of the group (or the ports listed
+// in Ports) are probed every
 // CheckSec seconds; an empty port, or one whose sock failed DeadChecks
 // probes in a row, gets a fresh sock. MaxPerDay caps how many socks this
 // may take from the plan per day.
 type AutoKeepConfig struct {
-	Enabled    bool   `json:"enabled"`
-	Target     int    `json:"target"`
+	Enabled bool `json:"enabled"`
+	Target  int  `json:"target"`
+	// Ports, when set, lists the output ports to keep (for example
+	// "40010-40039,40050") instead of the first Target ports.
+	Ports      string `json:"ports,omitempty"`
 	Country    string `json:"country,omitempty"`
 	State      string `json:"state,omitempty"`
 	City       string `json:"city,omitempty"`

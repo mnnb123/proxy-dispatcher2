@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,6 +130,34 @@ func testHostReachable(testURL string) bool {
 	return true
 }
 
+// akPositions returns the positions (index inside the group's port range)
+// auto-keep looks after: the listed ports, or the first Target ports.
+func akPositions(ak config.AutoKeepConfig, m config.PortMapping) []int {
+	capacity := m.PortEnd - m.PortStart + 1
+	var out []int
+	if ak.Ports != "" {
+		ranges, err := parsePortSpec(ak.Ports)
+		if err != nil {
+			return nil
+		}
+		seen := map[int]bool{}
+		for _, r := range ranges {
+			for p := max(r[0], m.PortStart); p <= min(r[1], m.PortEnd) && len(out) < 500; p++ {
+				if !seen[p] {
+					seen[p] = true
+					out = append(out, p-m.PortStart)
+				}
+			}
+		}
+		sort.Ints(out)
+		return out
+	}
+	for pos := 0; pos < min(ak.Target, capacity); pos++ {
+		out = append(out, pos)
+	}
+	return out
+}
+
 // StartAutoKeep runs the auto-keep loop until ctx is done.
 func (s *Server) StartAutoKeep(ctx context.Context) {
 	go func() {
@@ -208,10 +237,12 @@ func (s *Server) akRunGroup(ctx context.Context, name string) error {
 		return fmt.Errorf("nhom khong co dai port")
 	}
 	testURL := s.cfg.HealthCheck.TestURL
-	target := min(ak.Target, m.PortEnd-m.PortStart+1)
-	ids := make([]string, target) // "" = empty port
-	for pos := 0; pos < target && pos < len(g.Proxies); pos++ {
-		ids[pos] = akID(&g.Proxies[pos])
+	ids := map[int]string{} // position -> proxy identity, "" = empty port
+	for _, pos := range akPositions(ak, m) {
+		ids[pos] = ""
+		if pos < len(g.Proxies) {
+			ids[pos] = akID(&g.Proxies[pos])
+		}
 	}
 	s.cfgMu.RUnlock()
 
@@ -455,6 +486,21 @@ func (s *Server) handlePostAutoKeep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	capacity := m.PortEnd - m.PortStart + 1
+	c.Ports = strings.Join(strings.Fields(c.Ports), "")
+	if c.Ports != "" {
+		ranges, err := parsePortSpec(c.Ports)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for _, rg := range ranges {
+			if rg[0] < m.PortStart || rg[1] > m.PortEnd {
+				respondError(w, http.StatusBadRequest, fmt.Sprintf("port can giu phai nam trong dai cua nhom %d-%d", m.PortStart, m.PortEnd))
+				return
+			}
+		}
+		c.Target = len(akPositions(c, m))
+	}
 	switch {
 	case c.Target < 1 || c.Target > capacity || c.Target > 500:
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("so port phai tu 1 den %d", min(capacity, 500)))

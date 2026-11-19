@@ -1344,9 +1344,12 @@ async function akLoad() {
   const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/auto-keep');
   if (!r.ok) { stBox.textContent = ''; tag.textContent = ''; return; }
   const c = r.data.config || {}, st = r.data.status || {};
+  const first = r.data.port_start || 0;
   document.getElementById('akEnabled').checked = !!c.enabled;
   document.getElementById('akUnique').checked = !!c.unique;
   document.getElementById('akTarget').value = c.target || 30;
+  document.getElementById('akPorts').value = c.ports || '';
+  if (first) document.getElementById('akPorts').placeholder = first + '-' + (first + 29);
   document.getElementById('akCheck').value = c.check_sec || 60;
   document.getElementById('akDead').value = c.dead_checks || 2;
   document.getElementById('akMax').value = c.max_per_day || 200;
@@ -1357,8 +1360,7 @@ async function akLoad() {
   document.getElementById('akLevel').value = c.level || '';
   tag.textContent = c.enabled ? '— ĐANG BẬT' : '— đang tắt';
   if (!c.enabled) { stBox.textContent = ''; return; }
-  const first = r.data.port_start || 0;
-  let t = 'Port ' + first + '–' + (first + c.target - 1) + ': ' + st.alive + ' sống, ' + st.dead + ' chết, ' + st.empty + ' trống' +
+  let t = 'Port ' + (c.ports || (first + '–' + (first + c.target - 1))) + ' (' + c.target + ' port): ' + st.alive + ' sống, ' + st.dead + ' chết, ' + st.empty + ' trống' +
     (st.running ? ' (đang kiểm tra…)' : '') + '\n' +
     'Hôm nay: đã lấy ' + st.spent_today + '/' + c.max_per_day + ' sock, trong đó thay ' + st.replaced_today + ' sock chết' +
     (st.last_run ? ' · kiểm tra gần nhất ' + fmtTime(st.last_run) : ' · chưa kiểm tra lần nào');
@@ -1373,6 +1375,7 @@ document.getElementById('akSaveBtn').addEventListener('click', async () => {
     enabled: document.getElementById('akEnabled').checked,
     unique: document.getElementById('akUnique').checked,
     target: parseInt(document.getElementById('akTarget').value, 10) || 0,
+    ports: document.getElementById('akPorts').value.trim(),
     check_sec: parseInt(document.getElementById('akCheck').value, 10) || 0,
     dead_checks: parseInt(document.getElementById('akDead').value, 10) || 0,
     max_per_day: parseInt(document.getElementById('akMax').value, 10) || 0,
@@ -1382,7 +1385,7 @@ document.getElementById('akSaveBtn').addEventListener('click', async () => {
     sock_type: document.getElementById('akType').value,
     level: document.getElementById('akLevel').value,
   };
-  if (body.enabled && !confirm('Bật tự giữ ' + body.target + ' port luôn sống cho nhóm ' + name + '?\n' +
+  if (body.enabled && !confirm('Bật tự giữ ' + (body.ports ? 'các port ' + body.ports : body.target + ' port đầu') + ' luôn sống cho nhóm ' + name + '?\n' +
     'Port trống và port chết sẽ tự lấy sock mới từ ShopSocks5, tối đa ' + body.max_per_day + ' lượt mỗi ngày.')) return;
   const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(name) + '/auto-keep', body);
   if (!r.ok) { setMsg('akMsg', r.data.error || 'Thất bại', true); return; }
