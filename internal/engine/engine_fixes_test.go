@@ -273,3 +273,35 @@ func TestExtractStripsProxyAuthorization(t *testing.T) {
 		t.Fatal("non-basic accepted")
 	}
 }
+
+// TestRetryPendingOpensBusyPort: a wanted port that was busy during
+// Reconcile is opened by RetryPending once it is free.
+func TestRetryPendingOpensBusyPort(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	lm := NewListenerManager(10, func(c net.Conn) {}, logger)
+	defer lm.Stop()
+
+	busy, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := busy.Addr().(*net.TCPAddr).Port
+	if failed := lm.Reconcile([]int{port}); len(failed) != 1 {
+		busy.Close()
+		t.Fatalf("failed = %v, want the busy port", failed)
+	}
+	if n := lm.RetryPending(); n != 0 {
+		busy.Close()
+		t.Fatalf("opened %d while the port was still busy", n)
+	}
+	busy.Close()
+	if n := lm.RetryPending(); n != 1 {
+		t.Fatalf("opened %d after the port was freed, want 1", n)
+	}
+	if got := lm.ActivePorts(); len(got) != 1 || got[0] != port {
+		t.Fatalf("active ports = %v, want [%d]", got, port)
+	}
+	if n := lm.RetryPending(); n != 0 {
+		t.Fatalf("retry opened %d again", n)
+	}
+}

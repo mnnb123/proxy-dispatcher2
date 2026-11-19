@@ -22,6 +22,10 @@ type ListenerManager struct {
 	maxConnPerPort int
 	logger         *slog.Logger
 	mu             sync.RWMutex
+	// pending holds wanted ports the last Reconcile could not open (usually
+	// the port was momentarily taken as the source port of an outgoing
+	// connection). RetryPending opens them later.
+	pending map[int]bool
 }
 
 // NewListenerManager constructs a ListenerManager.
@@ -116,10 +120,30 @@ func (lm *ListenerManager) Reconcile(want []int) (failed []int) {
 		opened++
 	}
 	sort.Ints(failed)
+	lm.pending = make(map[int]bool, len(failed))
+	for _, p := range failed {
+		lm.pending[p] = true
+	}
 	if opened > 0 || closed > 0 || len(failed) > 0 {
 		lm.logger.Info("listeners reconciled", "opened", opened, "closed", closed, "failed", len(failed), "total", len(lm.active))
 	}
 	return failed
+}
+
+// RetryPending tries again to open the ports the last Reconcile could not
+// open and returns how many are now listening.
+func (lm *ListenerManager) RetryPending() (opened int) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	for port := range lm.pending {
+		if err := lm.openLocked(port); err != nil {
+			continue
+		}
+		delete(lm.pending, port)
+		opened++
+		lm.logger.Info("listener opened on retry", "port", port)
+	}
+	return opened
 }
 
 func (lm *ListenerManager) acceptLoop(listener net.Listener, port int, counter *atomic.Int32) {
@@ -155,8 +179,19 @@ func (lm *ListenerManager) acceptLoop(listener net.Listener, port int, counter *
 			conn.Close()
 			continue
 		}
+		// Register the connection under the lock, and only while this
+		// listener is still the active one: Stop closes the listeners under
+		// the write lock and then waits on wg, so an Add here must not be
+		// able to run concurrently with that Wait.
+		lm.mu.RLock()
+		if lm.active[port] != listener {
+			lm.mu.RUnlock()
+			conn.Close()
+			continue
+		}
 		counter.Add(1)
 		lm.wg.Add(1)
+		lm.mu.RUnlock()
 		go lm.handleConn(conn, port, counter)
 	}
 }

@@ -197,6 +197,12 @@ func main() {
 	})
 
 	apiServer.StartAutoKeep(context.Background())
+	// Ports that were busy at startup or reload are retried until they open.
+	go func() {
+		for range time.Tick(15 * time.Second) {
+			lm.RetryPending()
+		}
+	}()
 
 	httpSrv := startWebPanel(cfg, apiServer, userMgr, tokenMgr, logger)
 
