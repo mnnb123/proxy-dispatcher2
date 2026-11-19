@@ -117,6 +117,7 @@ function initSidebar() {
       if (typeof bwInterval !== 'undefined' && bwInterval) { clearInterval(bwInterval); bwInterval = null; }
       if (typeof dashInterval !== 'undefined' && dashInterval) { clearInterval(dashInterval); dashInterval = null; }
       if (typeof reportInterval !== 'undefined' && reportInterval) { clearInterval(reportInterval); reportInterval = null; }
+      if (typeof sessInterval !== 'undefined' && sessInterval) { clearInterval(sessInterval); sessInterval = null; }
 
       // Tab-specific data loading
       const t = item.dataset.tab;
@@ -130,6 +131,7 @@ function initSidebar() {
         loadGroups(); loadImportSources(); loadHealthConfig(); loadRetryConfig();
       } else if (t === 'tab-session') {
         loadSessionTab();
+        sessInterval = setInterval(sessLiveRefresh, 10000);
       } else if (t === 'tab-portmap') {
         loadGroups().then(loadPortMappings);
       } else if (t === 'tab-report') {
@@ -1336,15 +1338,80 @@ document.getElementById('ssSaveBtn').addEventListener('click', async () => {
 });
 
 // ── Tự giữ port luôn sống ──────────────────────────────────
-async function akLoad() {
+let akCfg = null, akFirst = 0, akSpent = -1;
+
+// Ports the auto-keep looks after, in the order the server uses.
+function akPortList() {
+  const c = akCfg;
+  if (!c || !c.enabled) return [];
+  const out = [];
+  if (c.ports) {
+    c.ports.split(/[\s,;]+/).forEach(part => {
+      const m = part.match(/^(\d+)(?:-(\d+))?$/);
+      if (!m) return;
+      const a = parseInt(m[1], 10), b = m[2] ? parseInt(m[2], 10) : a;
+      for (let x = a; x <= b && out.length < 500; x++) if (!out.includes(x)) out.push(x);
+    });
+  } else if (akFirst) {
+    for (let i = 0; i < (c.target || 0); i++) out.push(akFirst + i);
+  }
+  return out;
+}
+
+function akRenderPorts() {
+  const box = document.getElementById('akPortsLive');
+  const ports = akPortList();
+  if (!ports.length || !sessCur) { box.innerHTML = ''; return; }
+  const by = {};
+  (sessCur.proxies || []).forEach(p => { if (p.output_port) by[p.output_port] = p; });
+  const keep = box.firstElementChild ? box.firstElementChild.scrollTop : 0;
+  let html = '<div style="max-height:320px;overflow:auto"><table class="mini-table"><tr><th>Port</th><th>Proxy gốc</th><th>IP public</th><th>Trạng thái</th></tr>';
+  ports.forEach(port => {
+    const p = by[port];
+    const has = p && p.host;
+    const st = has ? (p.status || 'unknown') : 'trống';
+    html += '<tr><td>' + port + '</td><td>' + (has ? escH(p.host) + ':' + p.port : '<span class="text-muted">—</span>') + '</td>';
+    html += '<td>' + (has && p.external_ip ? escH(p.external_ip) : '<span class="text-muted">—</span>') + '</td>';
+    html += '<td>' + statusDot(has ? p.status : '') + escH(st) + '</td></tr>';
+  });
+  html += '</table></div>';
+  box.innerHTML = html;
+  box.firstElementChild.scrollTop = keep;
+}
+
+function statusDot(status) {
+  const dot = status === 'alive' ? 'var(--color-success)' : status === 'slow' ? 'var(--color-warning)' : status === 'dead' ? 'var(--color-danger)' : 'var(--text-muted)';
+  return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dot + ';margin-right:6px"></span>';
+}
+
+// statusOnly: refresh the status text without touching the form (the user may be typing).
+async function akLoad(statusOnly) {
   const name = sessName();
   const stBox = document.getElementById('akStatus');
   const tag = document.getElementById('akState');
   if (!name) { stBox.textContent = ''; tag.textContent = ''; return; }
   const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/auto-keep');
   if (!r.ok) { stBox.textContent = ''; tag.textContent = ''; return; }
+  if (name !== sessName()) return;
   const c = r.data.config || {}, st = r.data.status || {};
   const first = r.data.port_start || 0;
+  akCfg = c; akFirst = first;
+  if (!statusOnly) akFillForm(c, first);
+  tag.textContent = c.enabled ? '— ĐANG BẬT' : '— đang tắt';
+  if (!c.enabled) { stBox.textContent = ''; akSpent = -1; akRenderPorts(); return; }
+  let t = 'Port ' + (c.ports || (first + '–' + (first + c.target - 1))) + ' (' + c.target + ' port): ' + st.alive + ' sống, ' + st.dead + ' chết, ' + st.empty + ' trống' +
+    (st.running ? ' (đang kiểm tra…)' : '') + '\n' +
+    'Hôm nay: đã lấy ' + st.spent_today + '/' + c.max_per_day + ' sock, trong đó thay ' + st.replaced_today + ' sock chết' +
+    (st.last_run ? ' · kiểm tra gần nhất ' + fmtTime(st.last_run) : ' · chưa kiểm tra lần nào');
+  if (st.last_error) t += '\nLỗi gần nhất (' + fmtTime(st.last_error_at) + '): ' + st.last_error;
+  stBox.textContent = t;
+  // A sock was fetched since the last look: the history list changed too.
+  if (statusOnly && akSpent >= 0 && st.spent_today !== akSpent) loadSessionHistory();
+  akSpent = st.spent_today;
+  akRenderPorts();
+}
+
+function akFillForm(c, first) {
   document.getElementById('akEnabled').checked = !!c.enabled;
   document.getElementById('akUnique').checked = !!c.unique;
   document.getElementById('akTarget').value = c.target || 30;
@@ -1358,14 +1425,6 @@ async function akLoad() {
   document.getElementById('akCity').value = c.city || '';
   document.getElementById('akType').value = c.sock_type || '';
   document.getElementById('akLevel').value = c.level || '';
-  tag.textContent = c.enabled ? '— ĐANG BẬT' : '— đang tắt';
-  if (!c.enabled) { stBox.textContent = ''; return; }
-  let t = 'Port ' + (c.ports || (first + '–' + (first + c.target - 1))) + ' (' + c.target + ' port): ' + st.alive + ' sống, ' + st.dead + ' chết, ' + st.empty + ' trống' +
-    (st.running ? ' (đang kiểm tra…)' : '') + '\n' +
-    'Hôm nay: đã lấy ' + st.spent_today + '/' + c.max_per_day + ' sock, trong đó thay ' + st.replaced_today + ' sock chết' +
-    (st.last_run ? ' · kiểm tra gần nhất ' + fmtTime(st.last_run) : ' · chưa kiểm tra lần nào');
-  if (st.last_error) t += '\nLỗi gần nhất (' + fmtTime(st.last_error_at) + '): ' + st.last_error;
-  stBox.textContent = t;
 }
 
 document.getElementById('akSaveBtn').addEventListener('click', async () => {
@@ -1544,6 +1603,42 @@ async function loadSessionTab() {
   await loadSessionGroup();
 }
 
+function sessRenderCurrent() {
+  const rows = (sessCur && sessCur.proxies) || [];
+  const box = document.getElementById('sessCurrent');
+  if (!rows.length) { box.innerHTML = '<p class="text-muted">Nhóm chưa có proxy. Dán list ở ô "Thay list".</p>'; return; }
+  const keep = box.firstElementChild ? box.firstElementChild.scrollTop : 0;
+  let html = '<div style="max-height:380px;overflow:auto"><table class="mini-table"><tr><th>Port output</th><th>Proxy gốc</th><th>User</th><th>IP public</th><th>Trạng thái</th></tr>';
+  rows.forEach(p => {
+    html += '<tr><td>' + (p.output_port || '<span class="text-muted">ngoài dải</span>') + '</td>';
+    html += '<td>' + escH(p.host) + ':' + p.port + '</td>';
+    html += '<td>' + escH(p.user || '') + '</td>';
+    html += '<td>' + (p.external_ip ? escH(p.external_ip) : '<span class="text-muted">chưa kiểm tra</span>') + '</td>';
+    html += '<td>' + statusDot(p.status) + escH(p.status || 'unknown') + '</td></tr>';
+  });
+  html += '</table></div>';
+  box.innerHTML = html;
+  box.firstElementChild.scrollTop = keep;
+}
+
+// Light refresh while the tab is open: statuses only, forms and history left alone.
+let sessInterval = null, sessLiveBusy = false;
+async function sessLiveRefresh() {
+  const name = sessName();
+  if (!name || document.hidden || sessLiveBusy) return;
+  if (!document.getElementById('akLive').checked) return;
+  sessLiveBusy = true;
+  try {
+    const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/proxies');
+    if (r.ok && name === sessName()) {
+      sessCur = r.data;
+      document.getElementById('sessCurCount').textContent = '(' + (sessCur.proxies || []).length + ')';
+      sessRenderCurrent();
+    }
+    await akLoad(true);
+  } finally { sessLiveBusy = false; }
+}
+
 async function loadSessionGroup() {
   const name = sessName();
   if (!name) return;
@@ -1561,21 +1656,8 @@ async function loadSessionGroup() {
   document.getElementById('sessInfo').textContent = info;
   document.getElementById('sessCurCount').textContent = '(' + rows.length + ')';
 
-  const box = document.getElementById('sessCurrent');
-  if (!rows.length) { box.innerHTML = '<p class="text-muted">Nhóm chưa có proxy. Dán list ở ô "Thay list".</p>'; }
-  else {
-    let html = '<div style="max-height:380px;overflow:auto"><table class="mini-table"><tr><th>Port output</th><th>Proxy gốc</th><th>User</th><th>IP public</th><th>Trạng thái</th></tr>';
-    rows.forEach(p => {
-      const dot = p.status === 'alive' ? 'var(--color-success)' : p.status === 'slow' ? 'var(--color-warning)' : p.status === 'dead' ? 'var(--color-danger)' : 'var(--text-muted)';
-      html += '<tr><td>' + (p.output_port || '<span class="text-muted">ngoài dải</span>') + '</td>';
-      html += '<td>' + escH(p.host) + ':' + p.port + '</td>';
-      html += '<td>' + escH(p.user || '') + '</td>';
-      html += '<td>' + (p.external_ip ? escH(p.external_ip) : '<span class="text-muted">chưa kiểm tra</span>') + '</td>';
-      html += '<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dot + ';margin-right:6px"></span>' + escH(p.status || 'unknown') + '</td></tr>';
-    });
-    html += '</table></div>';
-    box.innerHTML = html;
-  }
+  sessRenderCurrent();
+  akRenderPorts();
   await loadSessionHistory();
   await loadSessionIps();
 }
