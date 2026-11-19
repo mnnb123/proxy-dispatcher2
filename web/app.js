@@ -1335,6 +1335,63 @@ document.getElementById('ssSaveBtn').addEventListener('click', async () => {
   ssLoadAccount();
 });
 
+// ── Tự giữ port luôn sống ──────────────────────────────────
+async function akLoad() {
+  const name = sessName();
+  const stBox = document.getElementById('akStatus');
+  const tag = document.getElementById('akState');
+  if (!name) { stBox.textContent = ''; tag.textContent = ''; return; }
+  const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/auto-keep');
+  if (!r.ok) { stBox.textContent = ''; tag.textContent = ''; return; }
+  const c = r.data.config || {}, st = r.data.status || {};
+  document.getElementById('akEnabled').checked = !!c.enabled;
+  document.getElementById('akUnique').checked = !!c.unique;
+  document.getElementById('akTarget').value = c.target || 30;
+  document.getElementById('akCheck').value = c.check_sec || 60;
+  document.getElementById('akDead').value = c.dead_checks || 2;
+  document.getElementById('akMax').value = c.max_per_day || 200;
+  document.getElementById('akCountry').value = c.country || '';
+  document.getElementById('akStateIn').value = c.state || '';
+  document.getElementById('akCity').value = c.city || '';
+  document.getElementById('akType').value = c.sock_type || '';
+  document.getElementById('akLevel').value = c.level || '';
+  tag.textContent = c.enabled ? '— ĐANG BẬT' : '— đang tắt';
+  if (!c.enabled) { stBox.textContent = ''; return; }
+  const first = r.data.port_start || 0;
+  let t = 'Port ' + first + '–' + (first + c.target - 1) + ': ' + st.alive + ' sống, ' + st.dead + ' chết, ' + st.empty + ' trống' +
+    (st.running ? ' (đang kiểm tra…)' : '') + '\n' +
+    'Hôm nay: đã lấy ' + st.spent_today + '/' + c.max_per_day + ' sock, trong đó thay ' + st.replaced_today + ' sock chết' +
+    (st.last_run ? ' · kiểm tra gần nhất ' + fmtTime(st.last_run) : ' · chưa kiểm tra lần nào');
+  if (st.last_error) t += '\nLỗi gần nhất (' + fmtTime(st.last_error_at) + '): ' + st.last_error;
+  stBox.textContent = t;
+}
+
+document.getElementById('akSaveBtn').addEventListener('click', async () => {
+  const name = sessName();
+  if (!name) { setMsg('akMsg', 'Chưa có nhóm phiên', true); return; }
+  const body = {
+    enabled: document.getElementById('akEnabled').checked,
+    unique: document.getElementById('akUnique').checked,
+    target: parseInt(document.getElementById('akTarget').value, 10) || 0,
+    check_sec: parseInt(document.getElementById('akCheck').value, 10) || 0,
+    dead_checks: parseInt(document.getElementById('akDead').value, 10) || 0,
+    max_per_day: parseInt(document.getElementById('akMax').value, 10) || 0,
+    country: document.getElementById('akCountry').value.trim(),
+    state: document.getElementById('akStateIn').value.trim(),
+    city: document.getElementById('akCity').value.trim(),
+    sock_type: document.getElementById('akType').value,
+    level: document.getElementById('akLevel').value,
+  };
+  if (body.enabled && !confirm('Bật tự giữ ' + body.target + ' port luôn sống cho nhóm ' + name + '?\n' +
+    'Port trống và port chết sẽ tự lấy sock mới từ ShopSocks5, tối đa ' + body.max_per_day + ' lượt mỗi ngày.')) return;
+  const r = await apiCall('POST', '/api/groups/' + encodeURIComponent(name) + '/auto-keep', body);
+  if (!r.ok) { setMsg('akMsg', r.data.error || 'Thất bại', true); return; }
+  setMsg('akMsg', body.enabled ? 'Đã bật. Lần kiểm tra đầu chạy trong vài giây.' : 'Đã lưu (đang tắt)', false);
+  akLoad();
+  if (body.enabled) { setTimeout(() => { akLoad(); loadSessionGroup(); }, 20000); }
+});
+document.getElementById('akReloadBtn').addEventListener('click', () => { akLoad(); loadSessionGroup(); });
+
 // ── API cho khách (đổi IP theo port) ───────────────────────
 let saData = null;
 
@@ -1488,6 +1545,7 @@ async function loadSessionGroup() {
   const name = sessName();
   if (!name) return;
   saLoad();
+  akLoad();
   document.getElementById('sessSnapshot').innerHTML = '';
   const r = await apiCall('GET', '/api/groups/' + encodeURIComponent(name) + '/proxies');
   if (!r.ok) { setMsg('sessMsg', r.data.error || 'Không tải được nhóm', true); return; }
@@ -1526,7 +1584,7 @@ async function loadSessionHistory() {
   if (!r.ok) { box.innerHTML = '<p class="text-muted">' + escH(r.data.error || 'Không tải được lịch sử') + '</p>'; return; }
   const snaps = r.data.snapshots || [];
   if (!snaps.length) { box.innerHTML = '<p class="text-muted">Chưa có list nào trong lịch sử. List cũ sẽ xuất hiện ở đây sau lần thay list đầu tiên.</p>'; return; }
-  const reasons = { replace: 'Thay list', restore: 'Trước khi khôi phục', swap: 'Bị thay ở 1 port', fetched: 'Sock đã lấy nhưng chưa gắn' };
+  const reasons = { replace: 'Thay list', restore: 'Trước khi khôi phục', swap: 'Bị thay ở 1 port', auto: 'Tự thay vì chết', fetched: 'Sock đã lấy nhưng chưa gắn' };
   let html = '<div style="max-height:300px;overflow:auto"><table class="mini-table"><tr><th>Thời gian</th><th>Lý do</th><th>Số proxy</th><th>Có IP public</th><th></th></tr>';
   snaps.forEach((sn, i) => {
     html += '<tr><td>' + fmtTime(sn.at) + '</td><td>' + (reasons[sn.reason] || escH(sn.reason)) + '</td><td>' + sn.count + '</td><td>' + sn.with_ip + '</td>';

@@ -299,7 +299,7 @@ func (s *Server) probeAsync(group string, from, n int) {
 		if from >= len(ptrs) {
 			return
 		}
-		s.healthChecker.CheckProxies(ptrs[from:min(from+n, len(ptrs))])
+		s.healthChecker.CheckProxiesPriority(ptrs[from:min(from+n, len(ptrs))])
 	}()
 }
 

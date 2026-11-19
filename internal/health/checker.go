@@ -262,6 +262,36 @@ func (hc *HealthChecker) CheckProxies(proxies []*config.ProxyEntry) []CheckResul
 	return results
 }
 
+// CheckProxiesPriority is CheckProxies with its own small worker pool. The
+// shared semaphore can be held for minutes by a periodic round over
+// thousands of proxies; callers that need an answer now (a freshly placed
+// sock, the auto-keep loop) must not queue behind it.
+func (hc *HealthChecker) CheckProxiesPriority(proxies []*config.ProxyEntry) []CheckResult {
+	results := make([]CheckResult, 0, len(proxies))
+	sem := make(chan struct{}, 10)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, p := range proxies {
+		if p == nil || p.IsEmpty() {
+			continue
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(proxy *config.ProxyEntry) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			res := hc.checkOne(proxy)
+			res.OldStatus = proxy.Status
+			hc.applyResult(proxy, res)
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}(p)
+	}
+	wg.Wait()
+	return results
+}
+
 // SetGroupProvider replaces the group provider.
 func (hc *HealthChecker) SetGroupProvider(p GroupProvider) {
 	if p == nil {

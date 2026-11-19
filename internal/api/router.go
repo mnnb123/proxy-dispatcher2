@@ -223,6 +223,8 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("POST /api/groups/{name}/session-api", s.handlePostSessionAPI)
 	s.mux.HandleFunc("POST /api/groups/{name}/session-api/keys", s.handlePostSessionAPIKey)
 	s.mux.HandleFunc("DELETE /api/groups/{name}/session-api/keys", s.handleDeleteSessionAPIKey)
+	s.mux.HandleFunc("GET /api/groups/{name}/auto-keep", s.handleGetAutoKeep)
+	s.mux.HandleFunc("POST /api/groups/{name}/auto-keep", s.handlePostAutoKeep)
 	// Customer API: key in the query string, no panel login.
 	s.mux.HandleFunc("/api/pub/port/{port}", s.handlePubPortStatus)
 	s.mux.HandleFunc("/api/pub/port/{port}/new", s.handlePubPortNew)

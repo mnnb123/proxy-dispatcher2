@@ -53,6 +53,27 @@ type ProxyGroup struct {
 	// SessionAPI lets customers change the IP of a port of this session
 	// group through the key-authenticated /api/pub/port/... endpoints.
 	SessionAPI *SessionAPIConfig `json:"session_api,omitempty"`
+	// AutoKeep keeps the first ports of this session group filled with
+	// working ShopSocks5 socks (see internal/api/autokeep.go).
+	AutoKeep *AutoKeepConfig `json:"auto_keep,omitempty"`
+}
+
+// AutoKeepConfig: the first Target ports of the group are probed every
+// CheckSec seconds; an empty port, or one whose sock failed DeadChecks
+// probes in a row, gets a fresh sock. MaxPerDay caps how many socks this
+// may take from the plan per day.
+type AutoKeepConfig struct {
+	Enabled    bool   `json:"enabled"`
+	Target     int    `json:"target"`
+	Country    string `json:"country,omitempty"`
+	State      string `json:"state,omitempty"`
+	City       string `json:"city,omitempty"`
+	SockType   string `json:"sock_type,omitempty"`
+	Level      string `json:"level,omitempty"`
+	Unique     bool   `json:"unique,omitempty"`
+	CheckSec   int    `json:"check_sec"`
+	DeadChecks int    `json:"dead_checks"`
+	MaxPerDay  int    `json:"max_per_day"`
 }
 
 // SessionAPIConfig configures the customer API of a session group. The

@@ -196,6 +196,8 @@ func main() {
 		Logger: logger, CfgMu: cfgMu,
 	})
 
+	apiServer.StartAutoKeep(context.Background())
+
 	httpSrv := startWebPanel(cfg, apiServer, userMgr, tokenMgr, logger)
 
 	// --- Background maintenance ---
