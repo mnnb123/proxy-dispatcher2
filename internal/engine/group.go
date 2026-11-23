@@ -15,6 +15,11 @@ type ManagedGroup struct {
 	Proxies []*config.ProxyEntry
 	Rotator Rotator
 	Mode    string
+	// NoBypass: traffic of this group always leaves through the port's own
+	// proxy. Bypass rules (direct / resource proxy), auto-bypass and the
+	// budget's "go direct" action are skipped; block rules still apply.
+	// Set for session groups, whose customers pay for the proxy's IP.
+	NoBypass bool
 }
 
 // GroupManager maps inbound ports to proxy groups.
@@ -62,8 +67,9 @@ func NewGroupManager(groups []config.ProxyGroup, mappings []config.PortMapping, 
 		gm.groups[g.Name] = &ManagedGroup{
 			Name:    g.Name,
 			Proxies: ptrs,
-			Rotator: rot,
-			Mode:    g.RotationMode,
+			Rotator:  rot,
+			Mode:     g.RotationMode,
+			NoBypass: g.KeepHistory,
 		}
 	}
 	for _, m := range mappings {

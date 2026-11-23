@@ -107,7 +107,10 @@ func (h *Socks5Handler) SetResourceProxyProvider(fn func() *config.ProxyEntry) {
 //
 // When creds is non-nil the client must complete SOCKS5 username/password
 // authentication accepted by creds before any request is served.
-func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry, rotator Rotator, clientIP string, creds func(user, pass string) bool) (*Socks5Result, error) {
+//
+// noBypass keeps every destination on the upstream proxy: "direct" and
+// "resource" rules are ignored (block rules still apply).
+func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *BufferedConn, proxy config.ProxyEntry, rotator Rotator, clientIP string, creds func(user, pass string) bool, noBypass bool) (*Socks5Result, error) {
 	const maxRetries = 3
 	var result Socks5Result
 	var portOnce sync.Once
@@ -140,6 +143,9 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 		// Check bypass/block rules for this domain.
 		if h.ruleEngine != nil && result.DestHost != "" {
 			action := h.ruleEngine.Evaluate(result.DestHost, "")
+			if noBypass && (action.Type == "direct" || action.Type == "resource") {
+				action.Type = "proxy"
+			}
 			h.logger.Debug("socks5 rule eval", "domain", result.DestHost, "action", action.Type, "target", targetAddr)
 			switch action.Type {
 			case "resource":

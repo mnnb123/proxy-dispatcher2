@@ -135,7 +135,7 @@ func (h *ConnHandler) handleSOCKS5(ctx context.Context, buffConn *engine.Buffere
 	if needAuth {
 		creds = h.whitelistMgr.CheckAccount
 	}
-	sResult, sErr := h.socks5H.HandleConnection(ctx, buffConn, *proxy, group.Rotator, clientIP, creds)
+	sResult, sErr := h.socks5H.HandleConnection(ctx, buffConn, *proxy, group.Rotator, clientIP, creds, group.NoBypass)
 	latency := time.Since(startTime).Milliseconds()
 	if sResult != nil && sResult.AuthDenied {
 		h.authFailed(outputPort, clientIP, "socks5", sResult.AuthTried)
@@ -158,7 +158,7 @@ func (h *ConnHandler) handleSOCKS5(ctx context.Context, buffConn *engine.Buffere
 		if totalBytes > 0 {
 			h.tracker.Record(destHost, totalBytes, routeType)
 		}
-		if routeType == "proxy" {
+		if routeType == "proxy" && !group.NoBypass {
 			h.sizeForwarder.CheckAutoBypass(destHost, outputPort, totalBytes)
 		}
 	}
@@ -209,6 +209,10 @@ func (h *ConnHandler) handleHTTP(ctx context.Context, buffConn *engine.BufferedC
 
 	prefixConn := engine.NewPrefixConn(reqInfo.ConsumedBytes, buffConn)
 	action := h.ruleEngine.Evaluate(reqInfo.Host, reqInfo.UrlPath)
+	if group.NoBypass && (action.Type == "direct" || action.Type == "resource") {
+		// Session groups never leave through anything but the port's proxy.
+		action.Type = "proxy"
+	}
 	proto4 := "http"
 	if reqInfo.IsHTTPS {
 		proto4 = "https"
@@ -309,7 +313,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 		}
 
 		if len(reqInfo.ConsumedBytes) > 0 && reqInfo.IsHTTPS {
-			return h.proxyHTTPS(ctx, buffConn, proxyConn, reqInfo, proxy, outputPort, &finalRes)
+			return h.proxyHTTPS(ctx, buffConn, proxyConn, reqInfo, proxy, outputPort, group.NoBypass, &finalRes)
 		}
 
 		// Plain HTTP: inject proxy auth then forward. The request head is
@@ -327,7 +331,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 				return err
 			}
 		}
-		res, sfErr := h.sizeForwarder.Forward(ctx, buffConn, proxyConn, reqInfo, reqInfo.ConsumedBytes, outputPort)
+		res, sfErr := h.forward(ctx, buffConn, proxyConn, reqInfo, reqInfo.ConsumedBytes, outputPort, group.NoBypass)
 		if sfErr != nil {
 			return sfErr
 		}
@@ -344,7 +348,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 }
 
 // proxyHTTPS establishes a CONNECT tunnel through upstream proxy for HTTPS.
-func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedConn, proxyConn net.Conn, reqInfo *engine.RequestInfo, proxy *config.ProxyEntry, outputPort int, result *engine.SizeForwardResult) error {
+func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedConn, proxyConn net.Conn, reqInfo *engine.RequestInfo, proxy *config.ProxyEntry, outputPort int, noBypass bool, result *engine.SizeForwardResult) error {
 	connectReq := "CONNECT " + reqInfo.Target + " HTTP/1.1\r\nHost: " + reqInfo.Target + "\r\n"
 	if proxy.User != "" {
 		connectReq += "Proxy-Authorization: " + engine.ProxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
@@ -379,12 +383,24 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 	// Pipe via buffConn (not the raw Conn) so any client bytes that were
 	// already buffered during protocol detection / header parsing are
 	// forwarded instead of silently dropped.
-	res, sfErr := h.sizeForwarder.Forward(ctx, buffConn, proxyConn, reqInfo, nil, outputPort)
+	res, sfErr := h.forward(ctx, buffConn, proxyConn, reqInfo, nil, outputPort, noBypass)
 	if sfErr != nil {
 		return sfErr
 	}
 	*result = res
 	return nil
+}
+
+// forward pipes client and upstream proxy. For a no-bypass group it is a
+// plain pipe: the size forwarder is skipped because it can re-route the
+// request directly (budget action) and feeds auto-bypass.
+func (h *ConnHandler) forward(ctx context.Context, client net.Conn, proxyConn net.Conn, reqInfo *engine.RequestInfo, consumed []byte, outputPort int, noBypass bool) (engine.SizeForwardResult, error) {
+	if !noBypass {
+		return h.sizeForwarder.Forward(ctx, client, proxyConn, reqInfo, consumed, outputPort)
+	}
+	pr := engine.Pipe(ctx, client, proxyConn, h.idleTimeout)
+	h.tracker.Record(reqInfo.Host, pr.BytesSent+pr.BytesReceived, "proxy")
+	return engine.SizeForwardResult{PipeResult: pr}, nil
 }
 
 // pipeDirectConn pipes data between client and remote for direct connections.

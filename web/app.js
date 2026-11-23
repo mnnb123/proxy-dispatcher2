@@ -1653,6 +1653,7 @@ async function loadSessionGroup() {
   const withIP = rows.filter(p => p.external_ip).length;
   let info = 'Dải port: ' + (sessCur.port_start ? sessCur.port_start + ' – ' + sessCur.port_end + ' (' + (g.capacity || 0) + ' port)' : 'chưa gán');
   info += ' · ' + rows.length + ' proxy · ' + withIP + ' đã có IP public';
+  info += ' · không bypass (mọi kết nối đi qua proxy của port)';
   document.getElementById('sessInfo').textContent = info;
   document.getElementById('sessCurCount').textContent = '(' + rows.length + ')';
 
