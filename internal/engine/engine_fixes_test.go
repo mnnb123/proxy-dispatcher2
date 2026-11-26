@@ -305,3 +305,57 @@ func TestRetryPendingOpensBusyPort(t *testing.T) {
 		t.Fatalf("retry opened %d again", n)
 	}
 }
+
+// TestSetDownClosesAndReopens: ports marked down stop listening (a client
+// gets "connection refused") and listen again once no longer down.
+func TestSetDownClosesAndReopens(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var ports []int
+	for i := 0; i < 2; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ports = append(ports, ln.Addr().(*net.TCPAddr).Port)
+		ln.Close()
+	}
+	lm := NewListenerManager(10, func(c net.Conn) { c.Close() }, logger)
+	var reserved []int
+	lm.SetReserver(func(p []int) error { reserved = p; return nil })
+	defer lm.Stop()
+	if failed := lm.Reconcile(ports); len(failed) != 0 {
+		t.Fatalf("failed = %v", failed)
+	}
+	if len(reserved) != 2 {
+		t.Fatalf("reserved = %v, want both ports", reserved)
+	}
+	lm.SetDown(map[int]bool{ports[0]: true})
+	if got := lm.ActivePorts(); len(got) != 1 || got[0] != ports[1] {
+		t.Fatalf("active = %v, want only %d", got, ports[1])
+	}
+	if lm.DownCount() != 1 {
+		t.Fatalf("down count = %d, want 1", lm.DownCount())
+	}
+	if c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(ports[0])), time.Second); err == nil {
+		c.Close()
+		t.Fatal("down port still accepts connections")
+	}
+	// A reload keeps the down port closed.
+	lm.Reconcile(ports)
+	if got := lm.ActivePorts(); len(got) != 1 {
+		t.Fatalf("after reload active = %v, want 1 port", got)
+	}
+	lm.SetDown(nil)
+	if got := lm.ActivePorts(); len(got) != 2 {
+		t.Fatalf("after SetDown(nil) active = %v, want both", got)
+	}
+}
+
+func TestPortRanges(t *testing.T) {
+	if got := PortRanges([]int{1, 2, 3, 5, 7, 8}); got != "1-3,5,7-8" {
+		t.Fatalf("got %q", got)
+	}
+	if got := PortRanges(nil); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}

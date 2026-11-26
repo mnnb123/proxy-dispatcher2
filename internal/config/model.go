@@ -121,6 +121,11 @@ type HealthCheckConfig struct {
 	SlowThresholdMs int    `json:"slow_threshold_ms"`
 	MaxConcurrent   int    `json:"max_concurrent"`
 	AutoRemoveDead  bool   `json:"auto_remove_dead"`
+	// KeepDeadPortsOpen turns off the default behaviour of closing an
+	// output port while its proxy is dead (or the port has no proxy), so
+	// that checkers see the port as dead instead of an open port that
+	// cannot reach the internet.
+	KeepDeadPortsOpen bool `json:"keep_dead_ports_open,omitempty"`
 }
 
 // RetryConfig controls connection-level retry.

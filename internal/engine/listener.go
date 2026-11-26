@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,13 @@ type ListenerManager struct {
 	// the port was momentarily taken as the source port of an outgoing
 	// connection). RetryPending opens them later.
 	pending map[int]bool
+	// want is the port set of the last Reconcile; down holds wanted ports
+	// kept closed because their proxy is dead (see SetDown).
+	want map[int]bool
+	down map[int]bool
+	// reserve, when set, is told the wanted ports so the OS stops handing
+	// them out as source ports of outgoing connections.
+	reserve func(ports []int) error
 }
 
 // NewListenerManager constructs a ListenerManager.
@@ -98,6 +106,56 @@ func (lm *ListenerManager) Reconcile(want []int) (failed []int) {
 
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
+	if lm.reserve != nil && !sameSet(lm.want, wantSet) {
+		if err := lm.reserve(sortedKeys(wantSet)); err != nil {
+			lm.logger.Warn("could not reserve output ports", "error", err)
+		}
+	}
+	lm.want = wantSet
+	return lm.applyLocked()
+}
+
+// SetReserver installs the function told about every new wanted port set.
+func (lm *ListenerManager) SetReserver(fn func(ports []int) error) {
+	lm.mu.Lock()
+	lm.reserve = fn
+	lm.mu.Unlock()
+}
+
+// SetDown keeps the given wanted ports closed (their proxy is dead) and
+// reopens every other wanted port. In-flight connections are not touched.
+func (lm *ListenerManager) SetDown(down map[int]bool) (failed []int) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	if sameSet(lm.down, down) {
+		return nil
+	}
+	lm.down = down
+	return lm.applyLocked()
+}
+
+// DownCount returns how many wanted ports are kept closed by SetDown.
+func (lm *ListenerManager) DownCount() int {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	n := 0
+	for p := range lm.down {
+		if lm.want[p] {
+			n++
+		}
+	}
+	return n
+}
+
+// applyLocked opens want minus down and closes everything else. Caller
+// must hold lm.mu.
+func (lm *ListenerManager) applyLocked() (failed []int) {
+	wantSet := make(map[int]bool, len(lm.want))
+	for p := range lm.want {
+		if !lm.down[p] {
+			wantSet[p] = true
+		}
+	}
 
 	closed := 0
 	for port, ln := range lm.active {
@@ -125,9 +183,51 @@ func (lm *ListenerManager) Reconcile(want []int) (failed []int) {
 		lm.pending[p] = true
 	}
 	if opened > 0 || closed > 0 || len(failed) > 0 {
-		lm.logger.Info("listeners reconciled", "opened", opened, "closed", closed, "failed", len(failed), "total", len(lm.active))
+		lm.logger.Info("listeners reconciled", "opened", opened, "closed", closed, "failed", len(failed), "total", len(lm.active), "down", len(lm.want)-len(wantSet))
 	}
 	return failed
+}
+
+func sameSet(a, b map[int]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func sortedKeys(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// PortRanges compresses sorted ports into "a-b,c,d-e" form.
+func PortRanges(ports []int) string {
+	var b []byte
+	for i := 0; i < len(ports); {
+		j := i
+		for j+1 < len(ports) && ports[j+1] == ports[j]+1 {
+			j++
+		}
+		if len(b) > 0 {
+			b = append(b, ',')
+		}
+		if j == i {
+			b = fmt.Appendf(b, "%d", ports[i])
+		} else {
+			b = fmt.Appendf(b, "%d-%d", ports[i], ports[j])
+		}
+		i = j + 1
+	}
+	return string(b)
 }
 
 // RetryPending tries again to open the ports the last Reconcile could not
@@ -199,7 +299,7 @@ func (lm *ListenerManager) acceptLoop(listener net.Listener, port int, counter *
 func (lm *ListenerManager) handleConn(conn net.Conn, port int, counter *atomic.Int32) {
 	defer func() {
 		if r := recover(); r != nil {
-			lm.logger.Error("handleConn panic", "port", port, "recover", r)
+			lm.logger.Error("handleConn panic", "port", port, "recover", r, "stack", string(debug.Stack()))
 		}
 	}()
 	defer lm.wg.Done()

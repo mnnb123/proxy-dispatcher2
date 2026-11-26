@@ -71,6 +71,10 @@ func (h *ConnHandler) Handle(conn net.Conn) {
 	h.handleHTTP(ctx, buffConn, group, clientIP, outputPort, startTime, proto, needAuth)
 }
 
+// badGateway answers a request whose upstream proxy could not be used.
+const badGateway = "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n" +
+	"Content-Length: 30\r\nConnection: close\r\n\r\nupstream proxy is unavailable\n"
+
 const proxyAuthRequired = "HTTP/1.1 407 Proxy Authentication Required\r\n" +
 	"Proxy-Authenticate: Basic realm=\"proxy\"\r\n" +
 	"Content-Length: 0\r\nConnection: close\r\n\r\n"
@@ -290,6 +294,10 @@ func (h *ConnHandler) routeResource(ctx context.Context, buffConn *engine.Buffer
 func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedConn, prefixConn net.Conn, reqInfo *engine.RequestInfo, group *engine.ManagedGroup, outputPort int, clientIP, proto4 string, startTime time.Time) {
 	var finalRes engine.SizeForwardResult
 	var finalProxyAddr string
+	// started is set once bytes may have reached the client; before that a
+	// failure is answered with 502 so the client sees the proxy as dead
+	// instead of a connection that just closes.
+	started := false
 
 	// Always use direct 1:1 port→proxy lookup. Wrap in SingleProxyRotator for retry compat.
 	proxy, err := h.groupMgr.GetNextProxy(outputPort, clientIP)
@@ -313,7 +321,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 		}
 
 		if len(reqInfo.ConsumedBytes) > 0 && reqInfo.IsHTTPS {
-			return h.proxyHTTPS(ctx, buffConn, proxyConn, reqInfo, proxy, outputPort, group.NoBypass, &finalRes)
+			return h.proxyHTTPS(ctx, buffConn, proxyConn, reqInfo, proxy, outputPort, group.NoBypass, &started, &finalRes)
 		}
 
 		// Plain HTTP: inject proxy auth then forward. The request head is
@@ -331,6 +339,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 				return err
 			}
 		}
+		started = true
 		res, sfErr := h.forward(ctx, buffConn, proxyConn, reqInfo, reqInfo.ConsumedBytes, outputPort, group.NoBypass)
 		if sfErr != nil {
 			return sfErr
@@ -341,6 +350,10 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 
 	if retryErr != nil {
 		h.logger.Debug("proxy retry exhausted", "error", retryErr)
+		if !started {
+			_ = buffConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_, _ = buffConn.Write([]byte(badGateway))
+		}
 		h.record(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "proxy", finalProxyAddr, retryErr.Error(), 502, 0, 0, time.Since(startTime).Milliseconds())
 		return
 	}
@@ -348,7 +361,7 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 }
 
 // proxyHTTPS establishes a CONNECT tunnel through upstream proxy for HTTPS.
-func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedConn, proxyConn net.Conn, reqInfo *engine.RequestInfo, proxy *config.ProxyEntry, outputPort int, noBypass bool, result *engine.SizeForwardResult) error {
+func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedConn, proxyConn net.Conn, reqInfo *engine.RequestInfo, proxy *config.ProxyEntry, outputPort int, noBypass bool, started *bool, result *engine.SizeForwardResult) error {
 	connectReq := "CONNECT " + reqInfo.Target + " HTTP/1.1\r\nHost: " + reqInfo.Target + "\r\n"
 	if proxy.User != "" {
 		connectReq += "Proxy-Authorization: " + engine.ProxyBasicAuth(proxy.User, proxy.Pass) + "\r\n"
@@ -375,6 +388,7 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 		return fmt.Errorf("upstream CONNECT failed: %s", strings.TrimSpace(resp))
 	}
 
+	*started = true
 	if _, err := buffConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		proxyConn.Close()
 		return fmt.Errorf("write 200: %w", err)

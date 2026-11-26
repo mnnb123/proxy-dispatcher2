@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"proxy-dispatcher/internal/config"
@@ -46,8 +47,14 @@ func dialThroughHTTPProxy(ctx context.Context, proxy config.ProxyEntry, targetAd
 	}
 	if len(resp) < 12 || resp[9:12] != "200" {
 		conn.Close()
-		// CONNECT denied (e.g. Squid blocks non-SSL ports). Fall back to direct.
-		return d.DialContext(ctx, "tcp", targetAddr)
+		// Never fall back to a direct connection here: it would send the
+		// client out with this server's own IP (a dead or disabled upstream
+		// then looked "alive" with the server IP as exit IP).
+		status := resp
+		if i := strings.Index(status, "\r\n"); i >= 0 {
+			status = status[:i]
+		}
+		return nil, fmt.Errorf("upstream CONNECT failed: %s", status)
 	}
 	return conn, nil
 }

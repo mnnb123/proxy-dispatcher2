@@ -145,3 +145,56 @@ func TestSessionGroupIsNoBypass(t *testing.T) {
 		t.Fatal("session group must be no-bypass")
 	}
 }
+
+// TestHTTPUpstreamRefusalNeverGoesDirect: when an HTTP upstream refuses
+// CONNECT (e.g. "407 Zone Disabled"), the dial must fail instead of
+// connecting to the target directly with this server's own IP.
+func TestHTTPUpstreamRefusalNeverGoesDirect(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	var direct atomic.Int64
+	go func() {
+		for {
+			c, err := target.Accept()
+			if err != nil {
+				return
+			}
+			direct.Add(1)
+			c.Close()
+		}
+	}()
+
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	go func() {
+		for {
+			c, err := up.Accept()
+			if err != nil {
+				return
+			}
+			buf := make([]byte, 4096)
+			_, _ = c.Read(buf)
+			_, _ = c.Write([]byte("HTTP/1.1 407 Zone Disabled\r\n\r\n"))
+			c.Close()
+		}
+	}()
+
+	px := config.ProxyEntry{Host: "127.0.0.1", Port: up.Addr().(*net.TCPAddr).Port, Type: "http"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := dialThroughHTTPProxy(ctx, px, target.Addr().String())
+	if err == nil {
+		conn.Close()
+		t.Fatal("dial succeeded although the upstream refused CONNECT")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if direct.Load() != 0 {
+		t.Fatal("the target was reached directly, bypassing the upstream")
+	}
+}

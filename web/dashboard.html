@@ -167,6 +167,10 @@
           <label class="toggle-label" for="hcEnabled">Enable Health Check</label>
           <input type="checkbox" id="hcEnabled">
         </div>
+        <div class="toggle-row">
+          <label class="toggle-label" for="hcCloseDead">Đóng port khi proxy chết (khách check sẽ thấy chết, tự mở lại khi proxy sống)</label>
+          <input type="checkbox" id="hcCloseDead" checked>
+        </div>
         <div class="row">
           <div class="col"><label for="hcInterval">Interval (sec)</label><input type="number" id="hcInterval" value="30"></div>
           <div class="col"><label for="hcTimeout">Timeout (sec)</label><input type="number" id="hcTimeout" value="5"></div>

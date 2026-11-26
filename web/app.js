@@ -2011,9 +2011,12 @@ async function deleteImport(name) {
 }
 
 // ── Health Config + Retry ──────────────────────────────────
+let hcData = {};
 async function loadHealthConfig() {
   const r = await apiCall('GET', '/api/health/config');
   if (!r.ok) return;
+  hcData = r.data || {};
+  document.getElementById('hcCloseDead').checked = !r.data.keep_dead_ports_open;
   document.getElementById('hcEnabled').checked = r.data.enabled;
   document.getElementById('hcInterval').value = r.data.interval_sec || 30;
   document.getElementById('hcTimeout').value = r.data.timeout_sec || 5;
@@ -2023,15 +2026,17 @@ async function loadHealthConfig() {
 }
 
 document.getElementById('saveHCBtn').addEventListener('click', async () => {
-  const body = {
+  const body = Object.assign({}, hcData, {
+    keep_dead_ports_open: !document.getElementById('hcCloseDead').checked,
     enabled: document.getElementById('hcEnabled').checked,
     interval_sec: parseInt(document.getElementById('hcInterval').value, 10),
     timeout_sec: parseInt(document.getElementById('hcTimeout').value, 10),
     slow_threshold_ms: parseInt(document.getElementById('hcSlow').value, 10),
     max_concurrent: parseInt(document.getElementById('hcConcurrent').value, 10),
     test_url: document.getElementById('hcTestURL').value,
-  };
+  });
   const r = await apiCall('POST', '/api/health/config', body);
+  if (r.ok) hcData = body;
   setMsg('hcMsg', r.ok ? 'Saved' : (r.data.error||'Failed'), !r.ok);
 });
 

@@ -163,7 +163,10 @@ func main() {
 	}
 
 	lm := engine.NewListenerManager(cfg.MaxConnPerPort, connHandler.Handle, logger)
+	lm.SetReserver(engine.ReserveOutputPorts)
 	startListeners(cfg, lm, logger)
+	// Close the ports whose proxy is dead so checkers see them dead.
+	go (&deadPortWatcher{cfg: cfg, cfgMu: cfgMu, groups: groupMgr, lm: lm, logger: logger}).run(15 * time.Second)
 
 	// --- API / web panel ---
 	userMgr := auth.NewUserManager(cfg.Users, logger)

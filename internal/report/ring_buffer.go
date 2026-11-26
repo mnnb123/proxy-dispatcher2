@@ -36,6 +36,10 @@ type RingBuffer struct {
 
 // NewRingBuffer creates a RingBuffer and starts the auto-clear timer.
 func NewRingBuffer(maxRows int, autoClearSec int, logger *slog.Logger) *RingBuffer {
+	if maxRows <= 0 {
+		// A zero size made every Push panic (index out of range).
+		maxRows = 1000
+	}
 	rb := &RingBuffer{
 		entries:       make([]*LogEntry, maxRows),
 		maxRows:       maxRows,
