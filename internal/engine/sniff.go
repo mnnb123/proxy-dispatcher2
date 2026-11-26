@@ -15,9 +15,9 @@ import (
 // arrive, so rules, logs and auto-bypass see the real domain.
 
 const (
-	// sniffWait is how long to wait for the client's first bytes before
+	// SniffWait is how long to wait for the client's first bytes before
 	// dialing without a domain (protocols where the server speaks first).
-	sniffWait = 1500 * time.Millisecond
+	SniffWait = 1500 * time.Millisecond
 	// sniffMax caps how much client data is buffered while sniffing.
 	sniffMax = 16 << 10
 )
@@ -188,10 +188,34 @@ func cleanHost(s string) string {
 	return s
 }
 
+// PeekHost waits up to wait for the client's first bytes and returns the
+// host name they reveal (TLS SNI / HTTP Host), or "". Nothing is consumed:
+// the bytes stay buffered and are forwarded as usual.
+func (b *BufferedConn) PeekHost(wait time.Duration) string {
+	_ = b.Conn.SetReadDeadline(time.Now().Add(wait))
+	defer b.Conn.SetReadDeadline(time.Time{})
+	n := b.reader.Buffered()
+	if n < 1 {
+		n = 1
+	}
+	for {
+		p, err := b.reader.Peek(n)
+		host, more := SniffHost(p)
+		if !more || err != nil || len(p) >= b.reader.Size() {
+			return host
+		}
+		// Ask for at least one more byte; Peek fills with all available.
+		n = b.reader.Buffered() + 1
+		if n > b.reader.Size() {
+			n = b.reader.Size()
+		}
+	}
+}
+
 // sniffConn is a lazily dialed net.Conn. Bytes written to it are buffered
 // until SniffHost finds the destination host (or gives up); then dial is
 // called with that host and the buffer is flushed. Reads wait for the dial;
-// if the client sends nothing within sniffWait the dial happens without a
+// if the client sends nothing within SniffWait the dial happens without a
 // host.
 type sniffConn struct {
 	dial   func(ctx context.Context, host string) (net.Conn, error)
@@ -262,7 +286,7 @@ func (s *sniffConn) Write(p []byte) (int, error) {
 
 func (s *sniffConn) Read(p []byte) (int, error) {
 	if !s.isReady() {
-		t := time.NewTimer(sniffWait)
+		t := time.NewTimer(SniffWait)
 		select {
 		case <-s.ready:
 		case <-t.C:

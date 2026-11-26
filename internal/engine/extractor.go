@@ -25,6 +25,13 @@ type RequestInfo struct {
 	// removed from ConsumedBytes: it is addressed to this proxy and must not
 	// reach the upstream proxy or the origin server.
 	ProxyAuth string
+	// ConnectAnswered is set when "200 Connection established" was already
+	// sent to the client (to sniff the domain of a CONNECT to a raw IP);
+	// later stages must not send it again nor answer with an HTTP error.
+	ConnectAnswered bool
+	// RawIP is the IP the client sent in CONNECT when Host was replaced by
+	// the sniffed domain. Target still holds the IP.
+	RawIP string
 }
 
 // PrefixConn prepends already-consumed bytes before the real connection,

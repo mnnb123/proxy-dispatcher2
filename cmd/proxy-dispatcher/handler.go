@@ -71,6 +71,9 @@ func (h *ConnHandler) Handle(conn net.Conn) {
 	h.handleHTTP(ctx, buffConn, group, clientIP, outputPort, startTime, proto, needAuth)
 }
 
+// connectEstablished answers a successful CONNECT.
+const connectEstablished = "HTTP/1.1 200 Connection established\r\n\r\n"
+
 // badGateway answers a request whose upstream proxy could not be used.
 const badGateway = "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n" +
 	"Content-Length: 30\r\nConnection: close\r\n\r\nupstream proxy is unavailable\n"
@@ -211,8 +214,30 @@ func (h *ConnHandler) handleHTTP(ctx context.Context, buffConn *engine.BufferedC
 		}
 	}
 
+	if reqInfo.IsHTTPS && net.ParseIP(reqInfo.Host) != nil {
+		// CONNECT to a raw IP (the client resolved DNS itself). Answer now so
+		// the client sends its TLS ClientHello, and route by the domain in
+		// it. The tunnel still goes to the IP the client asked for.
+		_ = buffConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err := buffConn.Write([]byte(connectEstablished)); err != nil {
+			return
+		}
+		_ = buffConn.SetWriteDeadline(time.Time{})
+		reqInfo.ConnectAnswered = true
+		if host := buffConn.PeekHost(engine.SniffWait); host != "" {
+			reqInfo.RawIP = reqInfo.Host
+			reqInfo.Host = host
+		}
+	}
+
 	prefixConn := engine.NewPrefixConn(reqInfo.ConsumedBytes, buffConn)
 	action := h.ruleEngine.Evaluate(reqInfo.Host, reqInfo.UrlPath)
+	if action.Type == "proxy" && reqInfo.RawIP != "" {
+		// Rules saved earlier for the bare IP still apply.
+		if a := h.ruleEngine.Evaluate(reqInfo.RawIP, reqInfo.UrlPath); a.Type != "proxy" {
+			action = a
+		}
+	}
 	if group.NoBypass && (action.Type == "direct" || action.Type == "resource") {
 		// Session groups never leave through anything but the port's proxy.
 		action.Type = "proxy"
@@ -251,7 +276,12 @@ func (h *ConnHandler) handleHTTPFallback(ctx context.Context, buffConn *engine.B
 }
 
 func (h *ConnHandler) routeBlock(prefixConn net.Conn, reqInfo *engine.RequestInfo, outputPort int, clientIP, proto4 string, startTime time.Time, action rules.RouteAction) {
-	_ = rules.ExecuteBlockAction(prefixConn, action.Block, "http")
+	if reqInfo.ConnectAnswered {
+		// The tunnel is already open; an HTTP error page cannot be sent.
+		_ = prefixConn.Close()
+	} else {
+		_ = rules.ExecuteBlockAction(prefixConn, action.Block, "http")
+	}
 	h.tracker.Record(reqInfo.Host, 0, "block")
 	h.record(outputPort, clientIP, reqInfo.Host, reqInfo.Port, reqInfo.Method, reqInfo.UrlPath, proto4, "blocked", "", "blocked by rule", 403, 0, 0, time.Since(startTime).Milliseconds())
 }
@@ -297,7 +327,9 @@ func (h *ConnHandler) routeProxy(ctx context.Context, buffConn *engine.BufferedC
 	// started is set once bytes may have reached the client; before that a
 	// failure is answered with 502 so the client sees the proxy as dead
 	// instead of a connection that just closes.
-	started := false
+	// A CONNECT already answered (domain sniffing) must not get a 502 written
+	// into its tunnel.
+	started := reqInfo.ConnectAnswered
 
 	// Always use direct 1:1 port→proxy lookup. Wrap in SingleProxyRotator for retry compat.
 	proxy, err := h.groupMgr.GetNextProxy(outputPort, clientIP)
@@ -389,9 +421,11 @@ func (h *ConnHandler) proxyHTTPS(ctx context.Context, buffConn *engine.BufferedC
 	}
 
 	*started = true
-	if _, err := buffConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-		proxyConn.Close()
-		return fmt.Errorf("write 200: %w", err)
+	if !reqInfo.ConnectAnswered {
+		if _, err := buffConn.Write([]byte(connectEstablished)); err != nil {
+			proxyConn.Close()
+			return fmt.Errorf("write 200: %w", err)
+		}
 	}
 
 	// Pipe via buffConn (not the raw Conn) so any client bytes that were
@@ -420,9 +454,11 @@ func (h *ConnHandler) forward(ctx context.Context, client net.Conn, proxyConn ne
 // pipeDirectConn pipes data between client and remote for direct connections.
 func (h *ConnHandler) pipeDirectConn(ctx context.Context, buffConn *engine.BufferedConn, prefixConn net.Conn, remoteConn net.Conn, reqInfo *engine.RequestInfo) engine.PipeResult {
 	if reqInfo.IsHTTPS {
-		if _, err := buffConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-			remoteConn.Close()
-			return engine.PipeResult{}
+		if !reqInfo.ConnectAnswered {
+			if _, err := buffConn.Write([]byte(connectEstablished)); err != nil {
+				remoteConn.Close()
+				return engine.PipeResult{}
+			}
 		}
 		return engine.Pipe(ctx, buffConn, remoteConn, h.idleTimeout)
 	}

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -166,7 +167,7 @@ func TestSocks5SniffsDomainForIPTarget(t *testing.T) {
 		if !bytes.Equal(got, ch) {
 			t.Fatal("target did not receive the ClientHello unchanged")
 		}
-		if time.Since(start) > sniffWait {
+		if time.Since(start) > SniffWait {
 			t.Fatal("dial waited for the sniff timeout although the ClientHello was complete")
 		}
 		c.Close()
@@ -189,5 +190,71 @@ func TestSocks5SniffsDomainForIPTarget(t *testing.T) {
 		t.Fatalf("other domain: host=%q route=%q relayed=%d", res.DestHost, res.RouteType, relayed.Load())
 	} else if res.BytesSent == 0 || res.BytesRecv == 0 {
 		t.Fatalf("byte counts not reported: sent=%d recv=%d", res.BytesSent, res.BytesRecv)
+	}
+}
+
+// TestPeekHost: the HTTP CONNECT path peeks the ClientHello (sent in two
+// pieces) without consuming it, and gives up after the wait when the client
+// sends nothing.
+func TestPeekHost(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ch := clientHello(t, "www.example.org")
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	srv, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	go func() {
+		_, _ = client.Write(ch[:9])
+		time.Sleep(50 * time.Millisecond)
+		_, _ = client.Write(ch[9:])
+	}()
+	_, bc, err := DetectProtocol(srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := bc.PeekHost(time.Second); h != "www.example.org" {
+		t.Fatalf("PeekHost = %q", h)
+	}
+	got := make([]byte, len(ch))
+	_ = bc.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(bc, got); err != nil || !bytes.Equal(got, ch) {
+		t.Fatalf("ClientHello was consumed or altered: %v", err)
+	}
+
+	// Silent client: returns "" after the wait, connection still usable.
+	c2, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	s2, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	bc2 := &BufferedConn{reader: bufio.NewReaderSize(s2, 4096), Conn: s2}
+	start := time.Now()
+	if h := bc2.PeekHost(200 * time.Millisecond); h != "" {
+		t.Fatalf("silent client: %q", h)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("PeekHost waited %v", d)
+	}
+	_, _ = c2.Write([]byte("x"))
+	b := make([]byte, 1)
+	_ = bc2.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(bc2, b); err != nil || b[0] != 'x' {
+		t.Fatalf("read after timeout: %v", err)
 	}
 }
