@@ -122,31 +122,22 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 	// Resolver captures the FQDN before go-socks5 resolves it to IP.
 	resolver := &domainResolver{host: &result.DestHost, once: &domainOnce}
 
-	dialer := func(dialCtx context.Context, network, addr string) (net.Conn, error) {
-		// Capture port. addr may be "0.0.0.1:port" (dummy IP from resolver) or "real_ip:port" (client sent IP).
-		_, port, _ := net.SplitHostPort(addr)
-		portOnce.Do(func() {
-			result.DestPort = port
-			if result.DestHost == "" {
-				// Client sent a raw IP (resolver was not called).
-				result.DestHost, _, _ = net.SplitHostPort(addr)
+	// dialRoute applies the rules for ruleHost (falling back to rules on
+	// ruleIP, the raw IP the client asked for, if any) and dials targetAddr
+	// directly, through the resource proxy or through the upstream proxy.
+	dialRoute := func(dialCtx context.Context, network, ruleHost, ruleIP, targetAddr string) (net.Conn, error) {
+		if h.ruleEngine != nil && ruleHost != "" {
+			action := h.ruleEngine.Evaluate(ruleHost, "")
+			if action.Type == "proxy" && ruleIP != "" && ruleIP != ruleHost {
+				// Rules saved earlier for the bare IP still apply.
+				if a := h.ruleEngine.Evaluate(ruleIP, ""); a.Type != "proxy" {
+					action = a
+				}
 			}
-		})
-
-		// Reconstruct target using original domain (if captured by resolver)
-		// so upstream proxy handles DNS, not this server.
-		targetAddr := addr
-		if result.DestHost != "" && port != "" {
-			targetAddr = net.JoinHostPort(result.DestHost, port)
-		}
-
-		// Check bypass/block rules for this domain.
-		if h.ruleEngine != nil && result.DestHost != "" {
-			action := h.ruleEngine.Evaluate(result.DestHost, "")
 			if noBypass && (action.Type == "direct" || action.Type == "resource") {
 				action.Type = "proxy"
 			}
-			h.logger.Debug("socks5 rule eval", "domain", result.DestHost, "action", action.Type, "target", targetAddr)
+			h.logger.Debug("socks5 rule eval", "domain", ruleHost, "action", action.Type, "target", targetAddr)
 			switch action.Type {
 			case "resource":
 				if h.resourceProxy != nil {
@@ -222,6 +213,41 @@ func (h *Socks5Handler) HandleConnection(ctx context.Context, clientConn *Buffer
 		// Wrap with byte counter so we can report traffic size.
 		counter = &countingConn{Conn: conn}
 		return counter, nil
+	}
+
+	dialer := func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+		// Capture port. addr may be "0.0.0.1:port" (dummy IP from resolver) or "real_ip:port" (client sent IP).
+		_, port, _ := net.SplitHostPort(addr)
+		portOnce.Do(func() {
+			result.DestPort = port
+			if result.DestHost == "" {
+				// Client sent a raw IP (resolver was not called).
+				result.DestHost, _, _ = net.SplitHostPort(addr)
+			}
+		})
+
+		if ip := net.ParseIP(result.DestHost); ip != nil {
+			// The client resolved DNS itself and sent an IP. Learn the
+			// domain from its first bytes (TLS SNI / HTTP Host) before
+			// routing; the connection still goes to the IP it asked for.
+			rawIP := result.DestHost
+			return newSniffConn(ctx, func(sctx context.Context, host string) (net.Conn, error) {
+				ruleHost := rawIP
+				if host != "" {
+					ruleHost = host
+					result.DestHost = host
+				}
+				return dialRoute(sctx, network, ruleHost, rawIP, addr)
+			}), nil
+		}
+
+		// Reconstruct target using original domain (if captured by resolver)
+		// so upstream proxy handles DNS, not this server.
+		targetAddr := addr
+		if result.DestHost != "" && port != "" {
+			targetAddr = net.JoinHostPort(result.DestHost, port)
+		}
+		return dialRoute(dialCtx, network, result.DestHost, "", targetAddr)
 	}
 
 	conf := &socks5.Config{
