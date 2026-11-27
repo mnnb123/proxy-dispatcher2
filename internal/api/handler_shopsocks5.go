@@ -109,9 +109,9 @@ type ssFetchReq struct {
 // replaced: every returned sock costs quota, duplicate or not.
 const ssUniqueRounds = 3
 
-// knownIPs returns every public IP the group has now or has in history.
-// Caller holds the config lock (read or write).
-func (s *Server) knownIPs(group string) map[string]bool {
+// knownIPs returns every public IP the group has now and, with history,
+// every IP in its history. Caller holds the config lock (read or write).
+func (s *Server) knownIPs(group string, history bool) map[string]bool {
 	known := make(map[string]bool)
 	if idx := s.findGroup(group); idx >= 0 {
 		for _, p := range s.cfg.ProxyGroups[idx].Proxies {
@@ -119,6 +119,9 @@ func (s *Server) knownIPs(group string) map[string]bool {
 				known[p.ExternalIP] = true
 			}
 		}
+	}
+	if !history {
+		return known
 	}
 	for _, sn := range s.loadHistory(group).Snapshots {
 		for _, p := range sn.Proxies {
@@ -359,7 +362,7 @@ func (s *Server) handleShopSocks5Fetch(w http.ResponseWriter, r *http.Request) {
 	// Asking for one specific IP back skips both duplicate filters.
 	var known map[string]bool
 	if q.IPReal == "" {
-		if known, err = s.ssKnown(ctx, name, q.Unique); err != nil {
+		if known, err = s.ssKnown(ctx, name, q.Unique, true); err != nil {
 			respondError(w, http.StatusBadGateway, err.Error())
 			return
 		}

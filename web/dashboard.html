@@ -168,7 +168,7 @@
           <input type="checkbox" id="hcEnabled">
         </div>
         <div class="toggle-row">
-          <label class="toggle-label" for="hcCloseDead">Đóng port khi proxy chết (khách check sẽ thấy chết, tự mở lại khi proxy sống)</label>
+          <label class="toggle-label" for="hcCloseDead">Đóng port khi sock ShopSocks5 chết liên tục 3 phút (khách check sẽ thấy chết, tự mở lại khi sock sống; các nhóm khác không bị đóng port)</label>
           <input type="checkbox" id="hcCloseDead" checked>
         </div>
         <div class="row">
@@ -321,7 +321,7 @@
           <input type="checkbox" id="akEnabled">
         </div>
         <div class="toggle-row">
-          <label class="toggle-label" for="akUnique">Không lấy IP nhóm đã từng có</label>
+          <label class="toggle-label" for="akUnique">Không lấy IP đang có ở port khác trong nhóm (IP đã dùng trước đây vẫn được lấy lại, để đỡ tốn sock)</label>
           <input type="checkbox" id="akUnique">
         </div>
         <div class="row">

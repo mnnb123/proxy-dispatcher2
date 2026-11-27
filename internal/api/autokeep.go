@@ -312,7 +312,10 @@ func (s *Server) akRunGroup(ctx context.Context, name string) error {
 	defer ssFetchMu.Unlock()
 	fctx, cancel := context.WithTimeout(ctx, 150*time.Second)
 	defer cancel()
-	known, err := s.ssKnown(fctx, name, ak.Unique)
+	// Auto-keep only avoids IPs the group holds right now: checking the whole
+	// history made a third of the paid socks duplicates (each still costs a
+	// sock from the daily quota) once the history grew to thousands of IPs.
+	known, err := s.ssKnown(fctx, name, ak.Unique, false)
 	if err != nil {
 		return err
 	}

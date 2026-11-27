@@ -451,7 +451,7 @@ func (s *Server) handlePubPortNew(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 150*time.Second)
 	defer cancel()
-	known, err := s.ssKnown(ctx, t.group, t.api.Unique)
+	known, err := s.ssKnown(ctx, t.group, t.api.Unique, true)
 	if err != nil {
 		s.logger.Warn("session api: exclude list unavailable", "port", port, "error", err)
 		pubFail(w, http.StatusBadGateway, "the exclude list is unavailable, try again later")

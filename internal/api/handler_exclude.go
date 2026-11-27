@@ -146,9 +146,10 @@ func (s *Server) excludedIPs(ctx context.Context) (map[string]bool, error) {
 }
 
 // ssKnown builds the set of IPs a fetch for group must not return: the
-// external exclude list plus, when unique is set, every IP the group has
-// had. nil means "no filtering". Must be called without the config lock.
-func (s *Server) ssKnown(ctx context.Context, group string, unique bool) (map[string]bool, error) {
+// external exclude list plus, when unique is set, the IPs the group has now
+// and, with history, every IP it has had. nil means "no filtering". Must be
+// called without the config lock.
+func (s *Server) ssKnown(ctx context.Context, group string, unique, history bool) (map[string]bool, error) {
 	excl, err := s.excludedIPs(ctx)
 	if err != nil {
 		return nil, err
@@ -162,7 +163,7 @@ func (s *Server) ssKnown(ctx context.Context, group string, unique bool) (map[st
 	}
 	if unique {
 		s.cfgMu.RLock()
-		for ip := range s.knownIPs(group) {
+		for ip := range s.knownIPs(group, history) {
 			known[ip] = true
 		}
 		s.cfgMu.RUnlock()
