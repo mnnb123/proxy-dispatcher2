@@ -83,6 +83,14 @@ func (f *webSite) start(t *testing.T) (config.ShopSocks5Config, *shopsocks5.Clie
 		shopsocks5.New(srv.URL, "u", "t")
 }
 
+// stats reads the counters the handlers write (under the lock: the race
+// detector does not see an HTTP round trip as synchronisation).
+func (f *webSite) stats() (logins, bulk int, byIP []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.logins, f.bulk, append([]string(nil), f.byIP...)
+}
+
 func webRow(ip, country string) map[string]interface{} {
 	return map[string]interface{}{"ip_real": ip, "sock_country": country, "type_sock": "residential", "level": 1}
 }
@@ -110,11 +118,12 @@ func TestFetchSocksWebFirst(t *testing.T) {
 		if want := []string{"1.1.1.4", "1.1.1.5"}; !reflect.DeepEqual(ipsOf(got), want) {
 			t.Fatalf("got %v, want %v", ipsOf(got), want)
 		}
-		if spent != 2 || dups != 0 || f.bulk != 0 {
-			t.Fatalf("spent=%d dups=%d bulk=%d, want 2/0/0", spent, dups, f.bulk)
+		_, bulk, byIP := f.stats()
+		if spent != 2 || dups != 0 || bulk != 0 {
+			t.Fatalf("spent=%d dups=%d bulk=%d, want 2/0/0", spent, dups, bulk)
 		}
-		if want := []string{"1.1.1.3", "1.1.1.4", "1.1.1.5"}; !reflect.DeepEqual(f.byIP, want) {
-			t.Fatalf("api asked for %v, want %v", f.byIP, want)
+		if want := []string{"1.1.1.3", "1.1.1.4", "1.1.1.5"}; !reflect.DeepEqual(byIP, want) {
+			t.Fatalf("api asked for %v, want %v", byIP, want)
 		}
 		if !known["1.1.1.4"] || !known["1.1.1.5"] {
 			t.Fatalf("taken IPs were not added to known: %v", known)
@@ -122,8 +131,9 @@ func TestFetchSocksWebFirst(t *testing.T) {
 		// The session is reused: a second fetch does not log in again and
 		// does not ask for IPs it already asked for.
 		got, _, _, err = s.fetchSocks(ctx, cl, 1, filters, known)
-		if err != nil || len(got) != 1 || got[0].IPReal != "1.1.1.6" || f.logins != 1 {
-			t.Fatalf("second fetch: %v err=%v logins=%d", ipsOf(got), err, f.logins)
+		logins, _, _ := f.stats()
+		if err != nil || len(got) != 1 || got[0].IPReal != "1.1.1.6" || logins != 1 {
+			t.Fatalf("second fetch: %v err=%v logins=%d", ipsOf(got), err, logins)
 		}
 	})
 
@@ -132,8 +142,9 @@ func TestFetchSocksWebFirst(t *testing.T) {
 		c, cl := f.start(t)
 		s := &Server{cfg: &config.AppConfig{ShopSocks5: c}, cfgMu: &sync.RWMutex{}}
 		got, spent, _, err := s.fetchSocks(ctx, cl, 3, filters, map[string]bool{})
-		if err != nil || len(got) != 3 || spent != 3 || got[0].IPReal != "2.2.2.1" || f.bulk != 2 {
-			t.Fatalf("got %v spent=%d bulk=%d err=%v", ipsOf(got), spent, f.bulk, err)
+		_, bulk, _ := f.stats()
+		if err != nil || len(got) != 3 || spent != 3 || got[0].IPReal != "2.2.2.1" || bulk != 2 {
+			t.Fatalf("got %v spent=%d bulk=%d err=%v", ipsOf(got), spent, bulk, err)
 		}
 	})
 
@@ -143,12 +154,14 @@ func TestFetchSocksWebFirst(t *testing.T) {
 		s := &Server{cfg: &config.AppConfig{ShopSocks5: c}, cfgMu: &sync.RWMutex{}}
 		for i := 0; i < 2; i++ {
 			got, _, _, err := s.fetchSocks(ctx, cl, 1, filters, nil)
-			if err != nil || len(got) != 1 || len(f.byIP) != 0 {
-				t.Fatalf("round %d: got %v byIP=%v err=%v", i, ipsOf(got), f.byIP, err)
+			_, _, byIP := f.stats()
+			if err != nil || len(got) != 1 || len(byIP) != 0 {
+				t.Fatalf("round %d: got %v byIP=%v err=%v", i, ipsOf(got), byIP, err)
 			}
 		}
-		if f.logins != 1 || f.bulk != 2 {
-			t.Fatalf("logins=%d bulk=%d, want 1 login (paused after the captcha) and 2 API socks", f.logins, f.bulk)
+		logins, bulk, _ := f.stats()
+		if logins != 1 || bulk != 2 {
+			t.Fatalf("logins=%d bulk=%d, want 1 login (paused after the captcha) and 2 API socks", logins, bulk)
 		}
 	})
 
@@ -161,11 +174,13 @@ func TestFetchSocksWebFirst(t *testing.T) {
 		}
 		c.WebPass = ""
 		s = &Server{cfg: &config.AppConfig{ShopSocks5: c}, cfgMu: &sync.RWMutex{}}
-		if got, _, _, err := s.fetchSocks(ctx, cl, 1, filters, nil); err != nil || len(got) != 1 || f.bulk != 1 {
-			t.Fatalf("no web account: %v bulk=%d %v", ipsOf(got), f.bulk, err)
+		got, _, _, err := s.fetchSocks(ctx, cl, 1, filters, nil)
+		logins, bulk, _ := f.stats()
+		if err != nil || len(got) != 1 || bulk != 1 {
+			t.Fatalf("no web account: %v bulk=%d %v", ipsOf(got), bulk, err)
 		}
-		if f.logins != 0 {
-			t.Fatalf("the website was contacted %d times", f.logins)
+		if logins != 0 {
+			t.Fatalf("the website was contacted %d times", logins)
 		}
 	})
 }

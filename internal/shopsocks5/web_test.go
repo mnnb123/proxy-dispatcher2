@@ -8,16 +8,27 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // fakeSite imitates the website endpoints the client uses.
 type fakeSite struct {
-	password    string
-	captchaOK   bool
-	need2FA     bool
-	blocked     bool
+	password  string
+	captchaOK bool
+	need2FA   bool
+	blocked   bool
+
+	mu          sync.Mutex
 	listQueries []string
+}
+
+// queries reads what the list handler recorded (under the lock: the race
+// detector does not see an HTTP round trip as synchronisation).
+func (f *fakeSite) queries() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.listQueries...)
 }
 
 func (f *fakeSite) handler(t *testing.T) http.Handler {
@@ -58,7 +69,9 @@ func (f *fakeSite) handler(t *testing.T) http.Handler {
 		}})
 	})
 	mux.HandleFunc("/sock_list", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
 		f.listQueries = append(f.listQueries, r.URL.RawQuery)
+		f.mu.Unlock()
 		io.WriteString(w, `{"status":"success","total":10504,"current":3,"limit":20,"used_today":12,"response":[
 			{"sock_id":15866752,"sock_ip":"136.***.***.***","ip_real":"136.34.191.210","sock_hostname":"Google Fiber Inc.",
 			 "sock_zip":"64133","sock_city":"Kansas City","sock_states":"Missouri","sock_country":"US","score":0,"level":1,
@@ -99,7 +112,7 @@ func TestWebLoginAndList(t *testing.T) {
 		s.SockType != "residential" || s.Level != 1 || s.Score != 0 {
 		t.Fatalf("sock = %+v", s)
 	}
-	q := f.listQueries[0]
+	q := f.queries()[0]
 	for _, want := range []string{"sock_country=US", "type_sock=residential", "level=1", "current=3", "pageSize=20", "all=1", "authorization=tok123"} {
 		if !strings.Contains(q, want) {
 			t.Errorf("list query %q misses %q", q, want)
@@ -143,7 +156,7 @@ func TestWebListStopsAtCaptcha(t *testing.T) {
 	if _, err := c.List(ctx, WebFilter{Country: "US"}); !errors.Is(err, ErrWebCaptcha) {
 		t.Fatalf("got %v, want ErrWebCaptcha", err)
 	}
-	if len(f.listQueries) != 0 {
+	if len(f.queries()) != 0 {
 		t.Fatalf("list was requested although the captcha is pending")
 	}
 }
