@@ -187,6 +187,11 @@ type ShopSocks5Config struct {
 	UserName string `json:"user_name,omitempty"`
 	APIToken string `json:"api_token,omitempty"`
 	BaseURL  string `json:"base_url,omitempty"`
+	// WebUser/WebPass are the website login (not the API token). When set,
+	// socks are chosen from the website's list first and the plain API is
+	// the fallback (see internal/api/shopsocks5_web.go).
+	WebUser string `json:"web_user,omitempty"`
+	WebPass string `json:"web_pass,omitempty"`
 	// ExcludeURL returns IPs that must never be handed out (see
 	// internal/api/handler_exclude.go).
 	ExcludeURL string `json:"exclude_url,omitempty"`

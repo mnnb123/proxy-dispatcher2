@@ -319,7 +319,7 @@ func (s *Server) akRunGroup(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	socks, spent, dups, err := fetchUniqueSocks(fctx, cl, n, map[string]string{
+	socks, spent, dups, err := s.fetchSocks(fctx, cl, n, map[string]string{
 		"country": ak.Country, "state": ak.State, "city": ak.City, "sock_type": ak.SockType, "level": ak.Level,
 	}, known)
 	if spent > 0 {

@@ -29,15 +29,23 @@ func (s *Server) handleGetShopSocks5(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"user_name": c.UserName,
 		"token_set": c.APIToken != "",
+		// Website account: socks are chosen from the site's list first.
+		"web_user":     c.WebUser,
+		"web_pass_set": c.WebPass != "",
+		"web_status":   ssWeb.status(),
 	})
 }
 
-// POST /api/config/shopsocks5  {"user_name": "...", "api_token": "..."}
-// An empty api_token keeps the stored one.
+// POST /api/config/shopsocks5
+// {"user_name": "...", "api_token": "...", "web_user": "...", "web_pass": "..."}
+// An empty api_token / web_pass keeps the stored one; an empty web_user
+// turns the website path off.
 func (s *Server) handlePostShopSocks5(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		UserName string `json:"user_name"`
 		APIToken string `json:"api_token"`
+		WebUser  string `json:"web_user"`
+		WebPass  string `json:"web_pass"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
@@ -52,13 +60,21 @@ func (s *Server) handlePostShopSocks5(w http.ResponseWriter, r *http.Request) {
 	if next.UserName == "" {
 		next.APIToken = ""
 	}
+	next.WebUser = strings.TrimSpace(req.WebUser)
+	if req.WebPass != "" {
+		next.WebPass = req.WebPass
+	}
+	if next.WebUser == "" {
+		next.WebPass = ""
+	}
 	s.cfg.ShopSocks5 = next
 	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
 		s.cfg.ShopSocks5 = prev
 		respondError(w, http.StatusInternalServerError, "save failed")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "token_set": next.APIToken != ""})
+	ssWeb.reset() // saving again also lifts a pause (e.g. after the captcha was passed)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "token_set": next.APIToken != "", "web_pass_set": next.WebPass != ""})
 }
 
 // ssClient builds a client from the stored account. Takes the read lock:
@@ -367,7 +383,7 @@ func (s *Server) handleShopSocks5Fetch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	socks, spent, dups, err := fetchUniqueSocks(ctx, cl, q.Qty, map[string]string{
+	socks, spent, dups, err := s.fetchSocks(ctx, cl, q.Qty, map[string]string{
 		"country": q.Country, "state": q.State, "city": q.City,
 		"sock_type": q.SockType, "level": q.Level, "ip_real": q.IPReal,
 	}, known)

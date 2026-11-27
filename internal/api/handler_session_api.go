@@ -457,7 +457,7 @@ func (s *Server) handlePubPortNew(w http.ResponseWriter, r *http.Request) {
 		pubFail(w, http.StatusBadGateway, "the exclude list is unavailable, try again later")
 		return
 	}
-	socks, _, dups, err := fetchUniqueSocks(ctx, cl, 1, map[string]string{
+	socks, _, dups, err := s.fetchSocks(ctx, cl, 1, map[string]string{
 		"country": q.Country, "state": q.State, "city": q.City, "sock_type": q.SockType, "level": q.Level,
 	}, known)
 	if err == nil && len(socks) == 0 && dups > 0 {

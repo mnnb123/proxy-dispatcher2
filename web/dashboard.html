@@ -302,6 +302,12 @@
             <div class="col"><label for="ssToken">api_token (bỏ trống = giữ token đã lưu)</label><input type="password" id="ssToken" autocomplete="new-password"></div>
             <div class="col" style="display:flex;align-items:flex-end"><button class="btn btn-primary" id="ssSaveBtn">Lưu tài khoản</button></div>
           </div>
+          <p class="text-muted text-sm" style="margin-top:10px">Tài khoản đăng nhập web (tùy chọn): khi có, sock được chọn từ danh sách trên web trước (bỏ qua IP đã dùng mà không tốn lượt) rồi lấy đúng IP đó qua API; web lỗi hoặc đòi captcha thì tự lấy qua API như cũ. Bỏ trống email rồi Lưu để tắt.</p>
+          <div class="row">
+            <div class="col"><label for="ssWebUser">Email / tên đăng nhập web</label><input type="text" id="ssWebUser" autocomplete="off"></div>
+            <div class="col"><label for="ssWebPass">Mật khẩu web (bỏ trống = giữ mật khẩu đã lưu)</label><input type="password" id="ssWebPass" autocomplete="new-password"></div>
+          </div>
+          <div id="ssWebStatus" class="text-muted text-sm"></div>
         </details>
         <details style="margin-top:10px" id="ssExclBox">
           <summary>Danh sách IP loại trừ <span id="ssExclInfo" class="text-muted text-sm"></span></summary>
