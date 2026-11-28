@@ -192,6 +192,10 @@ type ShopSocks5Config struct {
 	// the fallback (see internal/api/shopsocks5_web.go).
 	WebUser string `json:"web_user,omitempty"`
 	WebPass string `json:"web_pass,omitempty"`
+	// TelegramToken/TelegramChat receive a message when taking socks runs
+	// into a problem (see internal/api/notify.go).
+	TelegramToken string `json:"telegram_token,omitempty"`
+	TelegramChat  string `json:"telegram_chat,omitempty"`
 	// ExcludeURL returns IPs that must never be handed out (see
 	// internal/api/handler_exclude.go).
 	ExcludeURL string `json:"exclude_url,omitempty"`

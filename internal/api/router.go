@@ -232,6 +232,7 @@ func NewServerWithDeps(d ServerDeps) *Server {
 	s.mux.HandleFunc("GET /api/config/shopsocks5", s.handleGetShopSocks5)
 	s.mux.HandleFunc("POST /api/config/shopsocks5", s.handlePostShopSocks5)
 	s.mux.HandleFunc("GET /api/config/shopsocks5/account", s.handleShopSocks5Account)
+	s.mux.HandleFunc("POST /api/config/shopsocks5/notify-test", s.handleNotifyTest)
 	s.mux.HandleFunc("GET /api/config/shopsocks5/exclude", s.handleGetExclude)
 	s.mux.HandleFunc("POST /api/config/shopsocks5/exclude", s.handlePostExclude)
 	s.mux.HandleFunc("PUT /api/groups/{name}", s.handlePutGroup)
@@ -320,6 +321,7 @@ func cfgLockFor(r *http.Request) cfgLockMode {
 		strings.HasPrefix(p, "/api/groups/") && strings.HasSuffix(p, "/check-ip"),
 		strings.HasPrefix(p, "/api/groups/") && strings.HasSuffix(p, "/shopsocks5"),
 		p == "/api/config/shopsocks5/account",
+		p == "/api/config/shopsocks5/notify-test",
 		p == "/api/config/shopsocks5/exclude",
 		strings.HasPrefix(p, "/api/pub/"):
 		return cfgLockNone

@@ -33,7 +33,9 @@ const (
 	ssWebMaxMisses = 4
 	// ssWebPause is how long the website is left alone after it refused the
 	// login or asked for a captcha: retrying at once risks an account lock.
-	ssWebPause = 15 * time.Minute
+	// It doubles with every refusal in a row, up to ssWebPauseMax.
+	ssWebPause    = 15 * time.Minute
+	ssWebPauseMax = 6 * time.Hour
 	// ssWebRecentTTL is how long an IP that was already asked for is skipped.
 	ssWebRecentTTL = 3 * time.Hour
 )
@@ -46,6 +48,7 @@ type ssWebState struct {
 	key         string // account the session belongs to
 	client      *shopsocks5.WebClient
 	pausedUntil time.Time
+	fails       int // refusals in a row
 	lastErr     string
 	lastOK      time.Time
 	recent      map[string]time.Time
@@ -56,7 +59,7 @@ var ssWeb ssWebState
 // reset forgets the session and any pause (the account was saved again).
 func (w *ssWebState) reset() {
 	w.mu.Lock()
-	w.key, w.client, w.pausedUntil, w.lastErr = "", nil, time.Time{}, ""
+	w.key, w.client, w.pausedUntil, w.lastErr, w.fails = "", nil, time.Time{}, "", 0
 	w.mu.Unlock()
 }
 
@@ -80,7 +83,8 @@ func (w *ssWebState) fail(err error, pause bool) {
 	w.lastErr = err.Error()
 	w.client = nil
 	if pause {
-		w.pausedUntil = time.Now().Add(ssWebPause)
+		w.fails++
+		w.pausedUntil = time.Now().Add(min(ssWebPause<<min(w.fails-1, 10), ssWebPauseMax))
 	}
 	w.mu.Unlock()
 }
@@ -113,7 +117,7 @@ func (w *ssWebState) list(ctx context.Context, c config.ShopSocks5Config, f shop
 	key := c.BaseURL + "|" + c.WebUser + "|" + c.WebPass
 	w.mu.Lock()
 	if w.key != key {
-		w.key, w.client, w.pausedUntil, w.lastErr = key, nil, time.Time{}, ""
+		w.key, w.client, w.pausedUntil, w.lastErr, w.fails = key, nil, time.Time{}, "", 0
 	}
 	if time.Now().Before(w.pausedUntil) {
 		err := fmt.Errorf("web dang tam dung: %s", w.lastErr)
@@ -139,7 +143,7 @@ func (w *ssWebState) list(ctx context.Context, c config.ShopSocks5Config, f shop
 		page, err := cl.List(ctx, f)
 		if err == nil {
 			w.mu.Lock()
-			w.lastOK, w.lastErr = time.Now(), ""
+			w.lastOK, w.lastErr, w.fails = time.Now(), "", 0
 			w.mu.Unlock()
 			return page, nil
 		}
@@ -236,6 +240,7 @@ func (s *Server) fetchSocks(ctx context.Context, cl *shopsocks5.Client, qty int,
 			if s.logger != nil {
 				s.logger.Warn(msg, "error", e)
 			}
+			s.notifyProblem("web", 2*time.Hour, fmt.Sprintf("Lay sock qua web khong duoc, dang dung API du phong.\nLy do: %v", e))
 		})
 		if len(out) >= qty {
 			return out, spent, dups, nil

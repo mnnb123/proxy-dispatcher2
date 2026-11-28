@@ -467,6 +467,7 @@ func (s *Server) handlePubPortNew(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.logger.Warn("session api: provider error", "port", port, "error", err)
+		s.notifyProblem("pub", 30*time.Minute, fmt.Sprintf("API cho khach (port %d) khong lay duoc sock: %s", port, err))
 		pubFail(w, http.StatusBadGateway, "provider error: "+strings.TrimPrefix(err.Error(), "shopsocks5: "))
 		return
 	}

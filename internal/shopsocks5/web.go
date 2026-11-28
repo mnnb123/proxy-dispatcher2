@@ -184,7 +184,9 @@ func (c *WebClient) Login(ctx context.Context, user, password string) error {
 		if errors.Is(err, ErrWebBlocked) {
 			return err
 		}
-		return ErrWeb2FA
+		// Keep what the site said: the same check also fails for reasons
+		// other than a pending 2FA code.
+		return fmt.Errorf("%w (trang tra loi: %s)", ErrWeb2FA, strings.TrimPrefix(err.Error(), "shopsocks5 web: "))
 	}
 	return nil
 }

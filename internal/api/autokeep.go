@@ -216,6 +216,7 @@ func (s *Server) akRunDue(ctx context.Context) {
 		akMu.Unlock()
 		if err != nil {
 			s.logger.Warn("auto-keep", "group", j.name, "error", err)
+			s.notifyProblem("ak:"+j.name, 30*time.Minute, fmt.Sprintf("Tu giu port, nhom %s: %s", j.name, err))
 		}
 	}
 }

@@ -308,6 +308,13 @@
             <div class="col"><label for="ssWebPass">Mật khẩu web (bỏ trống = giữ mật khẩu đã lưu)</label><input type="password" id="ssWebPass" autocomplete="new-password"></div>
           </div>
           <div id="ssWebStatus" class="text-muted text-sm"></div>
+          <p class="text-muted text-sm" style="margin-top:10px">Thông báo Telegram (tùy chọn): nhận tin khi việc lấy sock gặp lỗi (hết lượt, ShopSocks5 báo lỗi, tự giữ port không lấy được sock, web đòi captcha/2FA hoặc khóa tài khoản). Cùng một lỗi chỉ báo lại sau 30 phút (lỗi web: 2 giờ). Bỏ trống Chat ID rồi Lưu để tắt.</p>
+          <div class="row">
+            <div class="col"><label for="ssTgToken">Bot token (bỏ trống = giữ token đã lưu)</label><input type="password" id="ssTgToken" autocomplete="new-password"></div>
+            <div class="col"><label for="ssTgChat">Chat ID</label><input type="text" id="ssTgChat" autocomplete="off"></div>
+            <div class="col" style="display:flex;align-items:flex-end"><button class="btn" id="ssTgTestBtn">Gửi thử</button></div>
+          </div>
+          <div id="ssTgStatus" class="text-muted text-sm"></div>
         </details>
         <details style="margin-top:10px" id="ssExclBox">
           <summary>Danh sách IP loại trừ <span id="ssExclInfo" class="text-muted text-sm"></span></summary>

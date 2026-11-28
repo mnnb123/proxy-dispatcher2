@@ -33,6 +33,9 @@ func (s *Server) handleGetShopSocks5(w http.ResponseWriter, r *http.Request) {
 		"web_user":     c.WebUser,
 		"web_pass_set": c.WebPass != "",
 		"web_status":   ssWeb.status(),
+		// Telegram notices for fetch problems.
+		"tg_chat":      c.TelegramChat,
+		"tg_token_set": c.TelegramToken != "",
 	})
 }
 
@@ -46,6 +49,8 @@ func (s *Server) handlePostShopSocks5(w http.ResponseWriter, r *http.Request) {
 		APIToken string `json:"api_token"`
 		WebUser  string `json:"web_user"`
 		WebPass  string `json:"web_pass"`
+		TgToken  string `json:"tg_token"`
+		TgChat   string `json:"tg_chat"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, "bad json")
@@ -67,6 +72,14 @@ func (s *Server) handlePostShopSocks5(w http.ResponseWriter, r *http.Request) {
 	if next.WebUser == "" {
 		next.WebPass = ""
 	}
+	// An empty chat id turns the Telegram notices off.
+	next.TelegramChat = strings.TrimSpace(req.TgChat)
+	if t := strings.TrimSpace(req.TgToken); t != "" {
+		next.TelegramToken = t
+	}
+	if next.TelegramChat == "" {
+		next.TelegramToken = ""
+	}
 	s.cfg.ShopSocks5 = next
 	if err := config.SaveConfig(s.cfgPath, s.cfg); err != nil {
 		s.cfg.ShopSocks5 = prev
@@ -74,7 +87,7 @@ func (s *Server) handlePostShopSocks5(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ssWeb.reset() // saving again also lifts a pause (e.g. after the captcha was passed)
-	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "token_set": next.APIToken != "", "web_pass_set": next.WebPass != ""})
+	respondJSON(w, http.StatusOK, map[string]interface{}{"status": "ok", "token_set": next.APIToken != "", "web_pass_set": next.WebPass != "", "tg_token_set": next.TelegramToken != ""})
 }
 
 // ssClient builds a client from the stored account. Takes the read lock:

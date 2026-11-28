@@ -1265,6 +1265,8 @@ async function ssLoadAccount() {
   if (!c.ok) { box.textContent = ''; return; }
   document.getElementById('ssUser').value = c.data.user_name || '';
   document.getElementById('ssWebUser').value = c.data.web_user || '';
+  document.getElementById('ssTgChat').value = c.data.tg_chat || '';
+  document.getElementById('ssTgStatus').textContent = 'Thông báo Telegram: ' + (c.data.tg_token_set ? 'đang bật' : 'chưa bật');
   document.getElementById('ssWebStatus').textContent = c.data.web_pass_set ? 'Lấy qua web: ' + (c.data.web_status || '') : 'Lấy qua web: chưa bật';
   if (!c.data.token_set) { box.textContent = 'Chưa nhập tài khoản ShopSocks5. Mở mục "Tài khoản ShopSocks5" bên dưới để nhập.'; return; }
   box.textContent = 'Đang đọc tài khoản…';
@@ -1328,16 +1330,27 @@ async function ssFetch(mode) {
 document.getElementById('ssAppendBtn').addEventListener('click', () => ssFetch('append'));
 document.getElementById('ssReplaceBtn').addEventListener('click', () => ssFetch('replace'));
 document.getElementById('ssRecallBtn').addEventListener('click', () => ssFetch('port'));
+document.getElementById('ssTgTestBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('ssTgTestBtn');
+  btn.disabled = true;
+  const r = await apiCall('POST', '/api/config/shopsocks5/notify-test', {});
+  btn.disabled = false;
+  if (!r.ok) { setMsg('ssMsg', 'Gửi thử thất bại: ' + (r.data.error || 'lỗi') + ' (nhớ bấm Lưu tài khoản trước)', true); return; }
+  setMsg('ssMsg', 'Đã gửi tin thử tới Telegram', false);
+});
 document.getElementById('ssSaveBtn').addEventListener('click', async () => {
   const r = await apiCall('POST', '/api/config/shopsocks5', {
     user_name: document.getElementById('ssUser').value.trim(),
     api_token: document.getElementById('ssToken').value.trim(),
     web_user: document.getElementById('ssWebUser').value.trim(),
     web_pass: document.getElementById('ssWebPass').value,
+    tg_token: document.getElementById('ssTgToken').value.trim(),
+    tg_chat: document.getElementById('ssTgChat').value.trim(),
   });
   if (!r.ok) { setMsg('ssMsg', r.data.error || 'Thất bại', true); return; }
   document.getElementById('ssToken').value = '';
   document.getElementById('ssWebPass').value = '';
+  document.getElementById('ssTgToken').value = '';
   setMsg('ssMsg', 'Đã lưu tài khoản ShopSocks5', false);
   ssLoadAccount();
 });
