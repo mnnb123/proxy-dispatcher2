@@ -10,14 +10,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeSite imitates the website endpoints the client uses.
 type fakeSite struct {
-	password  string
-	captchaOK bool
-	need2FA   bool
-	blocked   bool
+	password   string
+	captchaOK  bool
+	need2FA    bool
+	totpSecret string // with need2FA: the code verify2fa accepts
+	verified   bool
+	blocked    bool
 
 	mu          sync.Mutex
 	listQueries []string
@@ -52,10 +55,28 @@ func (f *fakeSite) handler(t *testing.T) http.Handler {
 		}
 	})
 	mux.HandleFunc("/authenticator/checkVerify2faFrontend", func(w http.ResponseWriter, r *http.Request) {
-		if f.need2FA {
+		f.mu.Lock()
+		pending := f.need2FA && !f.verified
+		f.mu.Unlock()
+		if pending {
 			io.WriteString(w, `{"status":"fail"}`)
 			return
 		}
+		io.WriteString(w, `{"status":"success"}`)
+	})
+	mux.HandleFunc("/authenticator/verify2fa", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var in map[string]interface{}
+		_ = json.Unmarshal(raw, &in)
+		want, _ := TOTP(f.totpSecret, time.Now())
+		prev, _ := TOTP(f.totpSecret, time.Now().Add(-30*time.Second))
+		if f.totpSecret == "" || (in["one_time_password"] != want && in["one_time_password"] != prev) {
+			io.WriteString(w, `{"status":"fail","message":"Invalid code"}`)
+			return
+		}
+		f.mu.Lock()
+		f.verified = true
+		f.mu.Unlock()
 		io.WriteString(w, `{"status":"success"}`)
 	})
 	mux.HandleFunc("/profile/index", func(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +164,45 @@ func TestWebLoginFailures(t *testing.T) {
 	}
 	if c.Token() != "" {
 		t.Fatalf("token kept after failed 2FA check")
+	}
+}
+
+func TestTOTP(t *testing.T) {
+	// RFC 6238 test vector (SHA-1, secret "12345678901234567890").
+	const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+	for ts, want := range map[int64]string{59: "287082", 1111111109: "081804", 1234567890: "005924"} {
+		got, err := TOTP(secret, time.Unix(ts, 0))
+		if err != nil || got != want {
+			t.Errorf("TOTP at %d = %q, %v; want %q", ts, got, err, want)
+		}
+	}
+	if got, err := TOTP("gezd gnbv-gy3t qojq gezd gnbv gy3t qojq", time.Unix(59, 0)); err != nil || got != "287082" {
+		t.Errorf("spaces and lower case: %q, %v", got, err)
+	}
+	if _, err := TOTP("not base32 !!", time.Now()); err == nil {
+		t.Error("a bad secret was accepted")
+	}
+}
+
+func TestWebLoginWith2FAKey(t *testing.T) {
+	ctx := context.Background()
+	const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+
+	c := newWebTest(t, &fakeSite{password: "pw", need2FA: true, totpSecret: secret, captchaOK: true})
+	c.TOTPSecret = secret
+	if err := c.Login(ctx, "u", "pw"); err != nil {
+		t.Fatalf("Login with the 2FA key: %v", err)
+	}
+	if _, err := c.List(ctx, WebFilter{}); err != nil {
+		t.Fatalf("List after 2FA: %v", err)
+	}
+
+	// A key that does not belong to the account: the site refuses the code.
+	c = newWebTest(t, &fakeSite{password: "pw", need2FA: true, totpSecret: secret})
+	c.TOTPSecret = "JBSWY3DPEHPK3PXP"
+	err := c.Login(ctx, "u", "pw")
+	if !errors.Is(err, ErrWeb2FA) || !strings.Contains(err.Error(), "Invalid code") || c.Token() != "" {
+		t.Fatalf("wrong key: got %v, token %q", err, c.Token())
 	}
 }
 

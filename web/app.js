@@ -1267,7 +1267,7 @@ async function ssLoadAccount() {
   document.getElementById('ssWebUser').value = c.data.web_user || '';
   document.getElementById('ssTgChat').value = c.data.tg_chat || '';
   document.getElementById('ssTgStatus').textContent = 'Thông báo Telegram: ' + (c.data.tg_token_set ? 'đang bật' : 'chưa bật');
-  document.getElementById('ssWebStatus').textContent = c.data.web_pass_set ? 'Lấy qua web: ' + (c.data.web_status || '') : 'Lấy qua web: chưa bật';
+  document.getElementById('ssWebStatus').textContent = (c.data.web_pass_set ? 'Lấy qua web: ' + (c.data.web_status || '') : 'Lấy qua web: chưa bật') + (c.data.web_totp_set ? ' · đã có khóa 2FA' : '');
   if (!c.data.token_set) { box.textContent = 'Chưa nhập tài khoản ShopSocks5. Mở mục "Tài khoản ShopSocks5" bên dưới để nhập.'; return; }
   box.textContent = 'Đang đọc tài khoản…';
   const a = await apiCall('GET', '/api/config/shopsocks5/account');
@@ -1344,12 +1344,14 @@ document.getElementById('ssSaveBtn').addEventListener('click', async () => {
     api_token: document.getElementById('ssToken').value.trim(),
     web_user: document.getElementById('ssWebUser').value.trim(),
     web_pass: document.getElementById('ssWebPass').value,
+    web_totp: document.getElementById('ssWebTotp').value.trim(),
     tg_token: document.getElementById('ssTgToken').value.trim(),
     tg_chat: document.getElementById('ssTgChat').value.trim(),
   });
   if (!r.ok) { setMsg('ssMsg', r.data.error || 'Thất bại', true); return; }
   document.getElementById('ssToken').value = '';
   document.getElementById('ssWebPass').value = '';
+  document.getElementById('ssWebTotp').value = '';
   document.getElementById('ssTgToken').value = '';
   setMsg('ssMsg', 'Đã lưu tài khoản ShopSocks5', false);
   ssLoadAccount();

@@ -114,7 +114,7 @@ func (w *ssWebState) claim(ip string) bool {
 // list reads one page, logging in when there is no session and once more
 // when the stored session is no longer accepted.
 func (w *ssWebState) list(ctx context.Context, c config.ShopSocks5Config, f shopsocks5.WebFilter) (*shopsocks5.WebPage, error) {
-	key := c.BaseURL + "|" + c.WebUser + "|" + c.WebPass
+	key := c.BaseURL + "|" + c.WebUser + "|" + c.WebPass + "|" + c.WebTOTP
 	w.mu.Lock()
 	if w.key != key {
 		w.key, w.client, w.pausedUntil, w.lastErr, w.fails = key, nil, time.Time{}, "", 0
@@ -131,6 +131,7 @@ func (w *ssWebState) list(ctx context.Context, c config.ShopSocks5Config, f shop
 	for {
 		if cl == nil {
 			cl = shopsocks5.NewWeb(c.BaseURL)
+			cl.TOTPSecret = c.WebTOTP
 			if err := cl.Login(ctx, c.WebUser, c.WebPass); err != nil {
 				w.fail(err, ctx.Err() == nil)
 				return nil, err

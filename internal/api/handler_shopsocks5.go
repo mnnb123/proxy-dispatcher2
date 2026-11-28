@@ -33,6 +33,7 @@ func (s *Server) handleGetShopSocks5(w http.ResponseWriter, r *http.Request) {
 		"web_user":     c.WebUser,
 		"web_pass_set": c.WebPass != "",
 		"web_status":   ssWeb.status(),
+		"web_totp_set": c.WebTOTP != "",
 		// Telegram notices for fetch problems.
 		"tg_chat":      c.TelegramChat,
 		"tg_token_set": c.TelegramToken != "",
@@ -49,6 +50,7 @@ func (s *Server) handlePostShopSocks5(w http.ResponseWriter, r *http.Request) {
 		APIToken string `json:"api_token"`
 		WebUser  string `json:"web_user"`
 		WebPass  string `json:"web_pass"`
+		WebTOTP  string `json:"web_totp"` // "" keeps the stored key, "-" removes it
 		TgToken  string `json:"tg_token"`
 		TgChat   string `json:"tg_chat"`
 	}
@@ -69,8 +71,18 @@ func (s *Server) handlePostShopSocks5(w http.ResponseWriter, r *http.Request) {
 	if req.WebPass != "" {
 		next.WebPass = req.WebPass
 	}
+	switch t := strings.TrimSpace(req.WebTOTP); {
+	case t == "-":
+		next.WebTOTP = ""
+	case t != "":
+		if _, err := shopsocks5.TOTP(t, time.Now()); err != nil {
+			respondError(w, http.StatusBadRequest, "ma khoa 2FA khong dung dinh dang (chuoi chu va so duoi ma QR)")
+			return
+		}
+		next.WebTOTP = t
+	}
 	if next.WebUser == "" {
-		next.WebPass = ""
+		next.WebPass, next.WebTOTP = "", ""
 	}
 	// An empty chat id turns the Telegram notices off.
 	next.TelegramChat = strings.TrimSpace(req.TgChat)

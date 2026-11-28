@@ -2,7 +2,8 @@
 // of the sock list (exit IP, location, ISP, risk) without taking any sock.
 //
 // The account comes from the environment so it never lands in shell
-// history: SS5_WEB_USER (user name or email) and SS5_WEB_PASS.
+// history: SS5_WEB_USER (user name or email) and SS5_WEB_PASS, plus
+// SS5_WEB_TOTP (the 2FA key) when the account has two-factor login on.
 //
 //	ss5web -country US -type residential -level 1 -page 1
 package main
@@ -39,6 +40,7 @@ func main() {
 	defer cancel()
 
 	c := shopsocks5.NewWeb("")
+	c.TOTPSecret = os.Getenv("SS5_WEB_TOTP")
 	if err := c.Login(ctx, user, pass); err != nil {
 		fail(err)
 	}

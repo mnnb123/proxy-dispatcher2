@@ -192,6 +192,9 @@ type ShopSocks5Config struct {
 	// the fallback (see internal/api/shopsocks5_web.go).
 	WebUser string `json:"web_user,omitempty"`
 	WebPass string `json:"web_pass,omitempty"`
+	// WebTOTP is the website account's 2FA key (base32), for accounts that
+	// keep two-factor login on.
+	WebTOTP string `json:"web_totp,omitempty"`
 	// TelegramToken/TelegramChat receive a message when taking socks runs
 	// into a problem (see internal/api/notify.go).
 	TelegramToken string `json:"telegram_token,omitempty"`

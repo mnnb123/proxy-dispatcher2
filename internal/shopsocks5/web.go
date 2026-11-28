@@ -28,6 +28,10 @@ import (
 type WebClient struct {
 	BaseURL string
 	HTTP    *http.Client
+	// TOTPSecret is the account's 2FA key (the base32 text behind the QR
+	// code). When set, Login answers the site's 2FA step with the current
+	// code, the way an authenticator app would.
+	TOTPSecret string
 
 	token string
 }
@@ -177,16 +181,42 @@ func (c *WebClient) Login(ctx context.Context, user, password string) error {
 	}
 	c.token = out.Response.Token
 	// An account with 2FA gets a token that is not usable until the code is
-	// entered; the site's pages run the same check after login.
-	if err := c.do(ctx, http.MethodPost, "/authenticator/checkVerify2faFrontend", nil,
-		map[string]interface{}{"one_time_password": nil, "_token": "", "authorization": c.token}, nil); err != nil {
+	// entered; the site's pages run the same check after login, and send the
+	// code to verify2fa when the check fails.
+	said := func(err error) string { return strings.TrimPrefix(err.Error(), "shopsocks5 web: ") }
+	check := func(otp interface{}) error {
+		return c.do(ctx, http.MethodPost, "/authenticator/checkVerify2faFrontend", nil,
+			map[string]interface{}{"one_time_password": otp, "_token": "", "authorization": c.token}, nil)
+	}
+	err = check(nil)
+	if err == nil {
+		return nil
+	}
+	fail := func(e error) error {
 		c.token = ""
-		if errors.Is(err, ErrWebBlocked) {
-			return err
-		}
+		return e
+	}
+	if errors.Is(err, ErrWebBlocked) {
+		return fail(err)
+	}
+	if strings.TrimSpace(c.TOTPSecret) == "" {
 		// Keep what the site said: the same check also fails for reasons
 		// other than a pending 2FA code.
-		return fmt.Errorf("%w (trang tra loi: %s)", ErrWeb2FA, strings.TrimPrefix(err.Error(), "shopsocks5 web: "))
+		return fail(fmt.Errorf("%w (trang tra loi: %s)", ErrWeb2FA, said(err)))
+	}
+	code, cerr := TOTP(c.TOTPSecret, time.Now())
+	if cerr != nil {
+		return fail(cerr)
+	}
+	if err := c.do(ctx, http.MethodPost, "/authenticator/verify2fa", nil,
+		map[string]interface{}{"one_time_password": code, "_token": "", "authorization": c.token}, nil); err != nil {
+		if errors.Is(err, ErrWebBlocked) {
+			return fail(err)
+		}
+		return fail(fmt.Errorf("%w (trang tu choi ma 2FA: %s)", ErrWeb2FA, said(err)))
+	}
+	if err := check(code); err != nil {
+		return fail(fmt.Errorf("%w (sau khi nhap ma, trang tra loi: %s)", ErrWeb2FA, said(err)))
 	}
 	return nil
 }
